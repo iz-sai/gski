@@ -2,6 +2,8 @@ import json
 
 from google.genai import types
 
+from gski.audioscope_salvage import salvage_raw_text
+
 
 FLAT_DIARIZE_TS_SCHEMA = types.Schema(
     type=types.Type.ARRAY,
@@ -162,8 +164,11 @@ def transcribe_chunk(client, *, model, audio_part, config, prompt):
     )
     meta = _response_meta(response)
 
+    repaired, raw_salvaged = salvage_raw_text(meta["raw_text"])
+    meta["raw_salvaged"] = raw_salvaged
+
     try:
-        data = json.loads(meta["raw_text"])
+        data = json.loads(repaired)
     except (json.JSONDecodeError, TypeError) as e:
         raise ChunkTranscriptionError(f"invalid JSON: {e}", meta) from e
 

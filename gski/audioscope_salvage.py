@@ -1,3 +1,4 @@
+import json
 import re
 from collections import Counter
 
@@ -82,3 +83,65 @@ def salvage_segments(segments: list[dict]) -> tuple[list[dict], bool]:
         else:
             out.append(seg)
     return out, modified
+
+
+# --- Raw-text salvage: detect token-level loops in JSON BEFORE parsing ---
+#
+# When Gemini MAX_TOKENS-es on whitespace (or a single character inside a
+# string), the emitted JSON is invalid. We scan for such signatures, and if
+# detected, truncate at the last balanced segment boundary inside the outer
+# array and append `]` to close it, producing a parseable prefix.
+
+_WHITESPACE_RUN = re.compile(r"\s{50,}")
+_CHAR_RUN = re.compile(r"(.)\1{200,}", re.DOTALL)
+
+
+def salvage_raw_text(raw: str) -> tuple[str, bool]:
+    """Detect token-level loops in raw JSON output and truncate to the last
+    complete segment. Returns (repaired_json_string, was_salvaged).
+
+    If the input is already valid JSON, returns (raw, False).
+    If JSON is broken for reasons other than a whitespace/character loop,
+    returns (raw, False) — caller should raise a normal parse error.
+    """
+    try:
+        json.loads(raw)
+        return raw, False
+    except (json.JSONDecodeError, ValueError):
+        pass
+
+    if not (_WHITESPACE_RUN.search(raw) or _CHAR_RUN.search(raw)):
+        return raw, False
+
+    # Walk the string tracking string/escape state and brace depth. Record
+    # the offset of the most recent `}` that closed an immediate child of
+    # the outer `[` (depth goes from 2 → 1).
+    last_complete = -1
+    depth = 0
+    in_string = False
+    escape = False
+    for i, ch in enumerate(raw):
+        if escape:
+            escape = False
+            continue
+        if in_string:
+            if ch == "\\":
+                escape = True
+                continue
+            if ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+            continue
+        if ch == "[" or ch == "{":
+            depth += 1
+        elif ch == "]" or ch == "}":
+            depth -= 1
+            if ch == "}" and depth == 1:
+                last_complete = i
+
+    if last_complete < 0:
+        return raw, False
+
+    return raw[: last_complete + 1] + "]", True

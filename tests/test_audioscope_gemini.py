@@ -100,3 +100,25 @@ def test_transcribe_chunk_raises_on_invalid_json():
         )
     assert e.value.meta["finish_reason"] == "MAX_TOKENS"
     assert "[{" in e.value.meta["raw_text"]
+
+
+def test_transcribe_chunk_salvages_whitespace_truncated_response():
+    """Whitespace-storm MAX_TOKENS must be repaired via salvage_raw_text
+    and parse successfully, with meta['raw_salvaged']=True."""
+    client = MagicMock()
+    response = MagicMock()
+    response.text = (
+        '[{"s":"A","t":"00:00","x":"hello"},{"s":"B","t":"00:05","x":"world"}'
+        + " " * 3000
+    )
+    response.candidates = [MagicMock(finish_reason="MAX_TOKENS")]
+    response.usage_metadata = MagicMock(prompt_token_count=100, candidates_token_count=32000)
+    client.models.generate_content.return_value = response
+
+    segs, meta = transcribe_chunk(
+        client, model="gemini-3-flash-preview",
+        audio_part=MagicMock(), config=None, prompt="test",
+    )
+    assert len(segs) == 2
+    assert segs[-1]["x"] == "world"
+    assert meta["raw_salvaged"] is True
