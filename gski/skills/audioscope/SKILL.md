@@ -53,6 +53,9 @@ gski audioscope --audio part1.mp3 --audio part2.mp3 --diarize
 | `--diarize` | flag | off | speaker identification (JSON output) |
 | `--timestamps` | flag | off | add MM:SS timestamps to segments |
 | `--output-dir` | path | `./output` | where to save output files |
+| `--chunk-len-sec` | int | `900` | chunk length in seconds (long audio path) |
+| `--overlap-sec` | int | `30` | overlap between chunks in seconds |
+| `--no-chunking` | flag | off | force single-shot even for long audio |
 
 ## Output
 
@@ -73,3 +76,5 @@ WAV, MP3, AIFF, AAC, OGG, FLAC
 - Max audio length per prompt: 9.5 hours
 - Gemini downsamples to 16 Kbps, merges multi-channel to mono
 - ~32 tokens per second of audio
+- Long audio (>~16 min) with `--diarize --timestamps` is automatically split into 15-min chunks with 30s overlap, transcribed sequentially with speaker-identity continuity, and merged. Disable with `--no-chunking`.
+- Each chunk is validated (duration / 5-gram loop / coverage gap) and retried up to 3 times with seed/temperature perturbation on failure; best partial result is kept if all attempts fail.
