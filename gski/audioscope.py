@@ -250,7 +250,15 @@ def run(args):
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
 
     if args.diarize:
-        data = json.loads(response.text)
+        raw_path = output_dir / f"audioscope_{ts}.raw.txt"
+        raw_path.write_text(response.text or "")
+        try:
+            data = json.loads(response.text)
+        except (json.JSONDecodeError, TypeError) as e:
+            print(f"error: failed to parse JSON response: {e}", file=sys.stderr)
+            print(f"raw response saved: {raw_path}", file=sys.stderr)
+            print(f"response length: {len(response.text or '')} chars", file=sys.stderr)
+            sys.exit(2)
         json_path = output_dir / f"audioscope_{ts}.json"
         json_path.write_text(json.dumps(data, indent=2, ensure_ascii=False))
         print(format_diarize(data))
