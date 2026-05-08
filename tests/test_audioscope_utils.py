@@ -3,7 +3,7 @@ from unittest.mock import patch
 
 import pytest
 
-from gski.audioscope_utils import probe_duration, parse_ts, format_ts, shift_ts
+from gski.audioscope_utils import probe_duration, parse_ts, format_ts, shift_ts, plan_chunks, ChunkSpec
 
 
 def test_probe_duration_parses_float():
@@ -59,3 +59,31 @@ def test_format_ts(sec, expected):
 def test_shift_ts():
     assert shift_ts("00:30", 60) == "01:30"
     assert shift_ts("05:00", 3600) == "1:05:00"
+
+
+def test_plan_chunks_short_audio_one_chunk():
+    chunks = plan_chunks(duration_sec=600, chunk_len_sec=900, overlap_sec=30)
+    assert chunks == [ChunkSpec(index=0, start=0, end=600)]
+
+
+def test_plan_chunks_exact_boundary():
+    chunks = plan_chunks(duration_sec=1800, chunk_len_sec=900, overlap_sec=30)
+    assert len(chunks) == 3
+    assert chunks[0] == ChunkSpec(0, 0, 900)
+    assert chunks[1] == ChunkSpec(1, 870, 1770)
+    assert chunks[2] == ChunkSpec(2, 1740, 1800)
+
+
+def test_plan_chunks_merges_tiny_tail():
+    chunks = plan_chunks(duration_sec=910, chunk_len_sec=900, overlap_sec=30, min_chunk_sec=60)
+    assert len(chunks) == 1
+    assert chunks[0] == ChunkSpec(0, 0, 910)
+
+
+def test_plan_chunks_2h():
+    chunks = plan_chunks(duration_sec=7523, chunk_len_sec=900, overlap_sec=30)
+    assert len(chunks) == 9
+    assert chunks[0].start == 0
+    assert chunks[-1].end == 7523
+    for prev, curr in zip(chunks, chunks[1:]):
+        assert prev.end - curr.start == 30
