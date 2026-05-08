@@ -149,14 +149,16 @@ def _file_size(paths):
 
 def format_diarize(data):
     lines = []
-    if data.get("summary"):
+    if isinstance(data, dict) and data.get("summary"):
         lines.append(f"Summary: {data['summary']}")
         lines.append("")
-    for seg in data.get("segments", []):
-        speaker = seg.get("speaker", "Unknown")
-        ts = seg.get("timestamp", "")
+    segments = data if isinstance(data, list) else data.get("segments", [])
+    for seg in segments:
+        speaker = seg.get("s") or seg.get("speaker") or "Unknown"
+        ts = seg.get("t") or seg.get("timestamp") or ""
+        text = seg.get("x") or seg.get("content") or ""
         prefix = f"[{ts}] {speaker}" if ts else speaker
-        lines.append(f"{prefix}: {seg['content']}")
+        lines.append(f"{prefix}: {text}")
     return "\n".join(lines)
 
 
@@ -205,6 +207,23 @@ def register(subparsers):
         default="./output",
         help="output directory for saving results (default: ./output)",
     )
+    p.add_argument(
+        "--chunk-len-sec",
+        type=int,
+        default=900,
+        help="chunk length in seconds for long audio (default: 900 = 15 min)",
+    )
+    p.add_argument(
+        "--overlap-sec",
+        type=int,
+        default=30,
+        help="overlap between chunks in seconds (default: 30)",
+    )
+    p.add_argument(
+        "--no-chunking",
+        action="store_true",
+        help="force single-shot even on long audio (debug)",
+    )
     p.set_defaults(func=run)
 
 
@@ -228,7 +247,57 @@ def run(args):
     prompt = args.prompt or default_prompt(args)
     client = genai.Client()
     model = MODELS[args.model]
-    config = build_config(args)
+
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Long-audio chunked path: diarize + single local audio file + not disabled.
+    if (
+        args.diarize
+        and len(args.audio) == 1
+        and not args.youtube
+        and not args.no_chunking
+    ):
+        from gski.audioscope_utils import probe_duration
+        from gski.audioscope_pipeline import transcribe_long
+        import tempfile
+
+        try:
+            duration = probe_duration(args.audio[0])
+        except (RuntimeError, FileNotFoundError) as e:
+            print(f"warning: could not probe duration ({e}); using single-shot path", file=sys.stderr)
+            duration = 0.0
+
+        threshold = args.chunk_len_sec + args.overlap_sec + 60
+        if duration > threshold:
+            print(
+                f"long audio detected ({duration:.0f}s > {threshold}s threshold), chunking...",
+                file=sys.stderr,
+            )
+            with tempfile.TemporaryDirectory(prefix="audioscope_chunks_") as tmp_dir:
+                result = transcribe_long(
+                    client,
+                    audio_path=args.audio[0],
+                    model=model,
+                    diarize=args.diarize,
+                    timestamps=args.timestamps,
+                    chunk_len_sec=args.chunk_len_sec,
+                    overlap_sec=args.overlap_sec,
+                    tmp_dir=tmp_dir,
+                    output_dir=output_dir,
+                )
+            print(format_diarize(result["segments"]))
+            for w in result["warnings"]:
+                print(f"warning: {w}", file=sys.stderr)
+            print(f"\nsaved: {result['run_dir']}", file=sys.stderr)
+            return
+
+    # Short-audio / non-diarize path: single-shot with hardened config for diarize.
+    if args.diarize:
+        from gski.audioscope_gemini import build_diarize_config
+        config = build_diarize_config(timestamps=args.timestamps)
+    else:
+        config = None
 
     if args.audio and _file_size(args.audio) > UPLOAD_THRESHOLD:
         uploaded = []
@@ -245,8 +314,6 @@ def run(args):
         config=config,
     )
 
-    output_dir = Path(args.output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
 
     if args.diarize:
