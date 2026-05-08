@@ -109,7 +109,10 @@ def _transcribe_single_chunk_with_retries(
         )
         if ok:
             return segments, attempts
-        if len(segments) > len(best_segments):
+        # Only keep as fallback if NOT contaminated by a repetition loop.
+        # Duration/gap failures may still yield usable partial content; loops
+        # are toxic (they corrupt downstream merge and reading experience).
+        if check_loop(segments).ok and len(segments) > len(best_segments):
             best_segments = segments
 
     return best_segments, attempts

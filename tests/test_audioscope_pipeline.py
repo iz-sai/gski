@@ -113,3 +113,46 @@ def test_transcribe_long_retries_failed_chunk(tmp_path):
     assert chunk0_meta["attempts"][1]["ok"] is True
     assert any("complete chunk 0" in s["x"] for s in result["segments"])
     assert any("complete chunk 1" in s["x"] for s in result["segments"])
+
+
+def test_transcribe_long_rejects_looped_segments_as_fallback(tmp_path):
+    """If all retries fail and the longest attempt contains an intra-segment loop,
+    do NOT use it as best-effort fallback — prefer empty output (so merge skips)."""
+    audio = tmp_path / "x.ogg"
+    audio.write_bytes(b"fake")
+    client = MagicMock()
+
+    # Build a segment where one token repeats thousands of times — classic
+    # Gemini MAX_TOKENS loop on a single word.
+    looped_text = "na " * 1200
+    looped = MagicMock()
+    looped.text = (
+        '[{"s":"Speaker 1","t":"00:05","x":"hello"},'
+        '{"s":"Speaker 2","t":"00:14","x":"' + looped_text.strip() + '"}]'
+    )
+    looped.candidates = [MagicMock(finish_reason="STOP")]
+    looped.usage_metadata = MagicMock(prompt_token_count=100, candidates_token_count=8000)
+
+    # Single chunk. All 3 retries return the same looped (and short-duration) output.
+    client.models.generate_content.side_effect = [looped, looped, looped]
+    client.files.upload.return_value = MagicMock()
+
+    with patch("gski.audioscope_pipeline.probe_duration", return_value=900), \
+         patch("gski.audioscope_pipeline.extract_chunk"):
+        result = transcribe_long(
+            client, audio_path=str(audio),
+            model="gemini-3-flash-preview",
+            diarize=True, timestamps=True,
+            tmp_dir=tmp_path, output_dir=tmp_path / "out",
+            chunk_len_sec=900, overlap_sec=30,
+        )
+
+    # All 3 attempts failed validation; looped segment must NOT appear in merged output.
+    assert result["num_chunks"] == 1
+    for seg in result["segments"]:
+        assert "na na na na na" not in seg["x"].lower(), (
+            f"looped segment leaked into merged output: {seg}"
+        )
+    # warning reported for the dropped chunk
+    assert any("no valid segments" in w or "validation failures" in w
+               for w in result["warnings"])
