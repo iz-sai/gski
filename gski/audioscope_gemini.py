@@ -77,6 +77,7 @@ def build_prompt_for_chunk(
     diarize: bool,
     timestamps: bool,
     prev_tail: list[dict] | None = None,
+    extra_instruction: str | None = None,
 ) -> str:
     mins = chunk_duration_sec // 60
     secs = chunk_duration_sec % 60
@@ -126,6 +127,9 @@ def build_prompt_for_chunk(
             "Maintain consistent speaker identities (same voice = same Speaker N label). "
             "Do NOT re-transcribe these — start after them:\n" + tail_str
         )
+
+    if extra_instruction:
+        parts.append(extra_instruction)
 
     return "\n\n".join(parts)
 

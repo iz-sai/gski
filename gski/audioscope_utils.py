@@ -104,3 +104,35 @@ def extract_chunk(src: str, dest: str, start_sec: int, end_sec: int) -> None:
     )
     if r.returncode != 0:
         raise RuntimeError(f"ffmpeg chunk extract failed: {r.stderr.strip()}")
+
+
+def extract_chunk_with_offset(
+    src: str, dest: str, *, start: int, end: int, offset_sec: int,
+) -> None:
+    """Extract [start+offset .. end] — shifts only start, preserves end.
+
+    Used for retry when the model skipped content at the beginning of a chunk.
+    If offset leaves less than 60s of audio, falls back to regular extraction
+    so the retry still sees a usable chunk.
+    """
+    actual_start = start + offset_sec
+    actual_dur = end - actual_start
+    if actual_dur < 60:
+        extract_chunk(src, dest, start, end)
+        return
+    r = subprocess.run(
+        [
+            "ffmpeg", "-nostdin", "-loglevel", "error", "-y",
+            "-ss", str(actual_start),
+            "-t", str(actual_dur),
+            "-i", str(src),
+            "-vn",
+            "-c:a", "libopus", "-b:a", "48k",
+            str(dest),
+        ],
+        capture_output=True, text=True, timeout=600,
+    )
+    if r.returncode != 0:
+        raise RuntimeError(
+            f"ffmpeg chunk extract (offset) failed: {r.stderr.strip()}"
+        )

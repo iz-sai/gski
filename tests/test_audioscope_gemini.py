@@ -47,6 +47,26 @@ def test_build_prompt_with_prev_tail_injects_context():
     assert "last words" in p
 
 
+def test_build_prompt_appends_extra_instruction():
+    p = build_prompt_for_chunk(
+        chunk_index=0, total_chunks=2,
+        chunk_start_sec=0, chunk_duration_sec=900,
+        diarize=True, timestamps=True, prev_tail=None,
+        extra_instruction="CRITICAL: anti-loop directive here",
+    )
+    assert "CRITICAL: anti-loop directive here" in p
+
+
+def test_build_prompt_extra_instruction_none_by_default():
+    p = build_prompt_for_chunk(
+        chunk_index=0, total_chunks=1,
+        chunk_start_sec=0, chunk_duration_sec=900,
+        diarize=True, timestamps=True, prev_tail=None,
+    )
+    # Must not crash and must not include the extra marker
+    assert "CRITICAL:" not in p
+
+
 def test_transcribe_chunk_parses_valid_json():
     client = MagicMock()
     response = MagicMock()

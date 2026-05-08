@@ -3,7 +3,15 @@ from unittest.mock import patch
 
 import pytest
 
-from gski.audioscope_utils import probe_duration, parse_ts, format_ts, shift_ts, plan_chunks, ChunkSpec
+from gski.audioscope_utils import (
+    probe_duration,
+    parse_ts,
+    format_ts,
+    shift_ts,
+    plan_chunks,
+    ChunkSpec,
+    extract_chunk_with_offset,
+)
 
 
 def test_probe_duration_parses_float():
@@ -87,3 +95,42 @@ def test_plan_chunks_2h():
     assert chunks[-1].end == 7523
     for prev, curr in zip(chunks, chunks[1:]):
         assert prev.end - curr.start == 30
+
+
+def test_extract_chunk_with_offset_shifts_start(tmp_path):
+    calls = []
+
+    def fake_run(cmd, **kw):
+        calls.append(cmd)
+        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
+
+    with patch("gski.audioscope_utils.subprocess.run", side_effect=fake_run):
+        extract_chunk_with_offset(
+            "in.ogg", str(tmp_path / "out.ogg"),
+            start=1000, end=1900, offset_sec=2,
+        )
+    assert len(calls) == 1
+    cmd = calls[0]
+    # start shifted to 1002, duration shrunk to 898
+    assert "1002" in cmd
+    assert "898" in cmd
+
+
+def test_extract_chunk_with_offset_falls_back_when_offset_too_large(tmp_path):
+    """If offset leaves <60s of chunk, fall back to regular extraction."""
+    calls = []
+
+    def fake_run(cmd, **kw):
+        calls.append(cmd)
+        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
+
+    with patch("gski.audioscope_utils.subprocess.run", side_effect=fake_run):
+        # offset=100 leaves only 50s of a 150s chunk → fallback
+        extract_chunk_with_offset(
+            "in.ogg", str(tmp_path / "out.ogg"),
+            start=0, end=150, offset_sec=100,
+        )
+    # fallback path should call ffmpeg with original start/end
+    cmd = calls[0]
+    assert "0" in cmd
+    assert "150" in cmd

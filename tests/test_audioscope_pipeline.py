@@ -97,7 +97,8 @@ def test_transcribe_long_retries_failed_chunk(tmp_path):
     client.files.upload.return_value = MagicMock()
 
     with patch("gski.audioscope_pipeline.probe_duration", return_value=1500), \
-         patch("gski.audioscope_pipeline.extract_chunk"):
+         patch("gski.audioscope_pipeline.extract_chunk"), \
+         patch("gski.audioscope_pipeline.extract_chunk_with_offset"):
         result = transcribe_long(
             client, audio_path=str(audio),
             model="gemini-3-flash-preview",
@@ -156,3 +157,83 @@ def test_transcribe_long_rejects_looped_segments_as_fallback(tmp_path):
     assert "hello clean prefix content" in joined
     assert "intro words" in joined
     assert "[\u2026cut: repetition loop\u2026]" in joined
+
+
+def test_retry_uses_audio_offset_on_second_attempt(tmp_path):
+    """Attempt 1 must call extract_chunk_with_offset (audio-perturbation retry)."""
+    audio = tmp_path / "x.ogg"
+    audio.write_bytes(b"fake")
+    client = MagicMock()
+
+    # Single chunk (900s). Attempt 0: gap failure (only 1 seg covers 15min).
+    # Attempt 1 (audio_offset): dense segments → passes.
+    bad = MagicMock()
+    bad.text = '[{"s":"A","t":"00:00","x":"start only"}]'  # duration fail
+    bad.candidates = [MagicMock(finish_reason="STOP")]
+    bad.usage_metadata = MagicMock(prompt_token_count=100, candidates_token_count=5)
+    good_segs = [
+        f'{{"s":"A","t":"{m:02d}:00","x":"minute {m}"}}' for m in range(15)
+    ]
+    good = MagicMock()
+    good.text = "[" + ",".join(good_segs) + "]"
+    good.candidates = [MagicMock(finish_reason="STOP")]
+    good.usage_metadata = MagicMock(prompt_token_count=100, candidates_token_count=50)
+
+    client.models.generate_content.side_effect = [bad, good]
+    client.files.upload.return_value = MagicMock()
+
+    with patch("gski.audioscope_pipeline.probe_duration", return_value=900), \
+         patch("gski.audioscope_pipeline.extract_chunk"), \
+         patch("gski.audioscope_pipeline.extract_chunk_with_offset") as mock_off:
+        transcribe_long(
+            client, audio_path=str(audio),
+            model="gemini-3-flash-preview",
+            diarize=True, timestamps=True,
+            tmp_dir=tmp_path, output_dir=tmp_path / "out",
+        )
+
+    # Attempt 0 uses default extraction; attempt 1 must invoke the offset variant.
+    assert mock_off.call_count == 1
+    kwargs = mock_off.call_args.kwargs
+    assert kwargs.get("offset_sec") == 2
+
+
+def test_retry_uses_prompt_variant_on_third_attempt(tmp_path):
+    """Attempt 2 must pass extra anti-loop instruction via the prompt."""
+    audio = tmp_path / "x.ogg"
+    audio.write_bytes(b"fake")
+    client = MagicMock()
+
+    # All three attempts return the same short (duration-fail) response so we
+    # can inspect the prompt used on attempt 2.
+    prompts_seen = []
+
+    def fake_gen(model, contents, config):
+        # contents is [audio_part, prompt_string]
+        prompts_seen.append(contents[1])
+        r = MagicMock()
+        r.text = '[{"s":"A","t":"00:00","x":"hi"}]'
+        r.candidates = [MagicMock(finish_reason="STOP")]
+        r.usage_metadata = MagicMock(prompt_token_count=100, candidates_token_count=5)
+        return r
+
+    client.models.generate_content.side_effect = fake_gen
+    client.files.upload.return_value = MagicMock()
+
+    with patch("gski.audioscope_pipeline.probe_duration", return_value=900), \
+         patch("gski.audioscope_pipeline.extract_chunk"), \
+         patch("gski.audioscope_pipeline.extract_chunk_with_offset"):
+        transcribe_long(
+            client, audio_path=str(audio),
+            model="gemini-3-flash-preview",
+            diarize=True, timestamps=True,
+            tmp_dir=tmp_path, output_dir=tmp_path / "out",
+        )
+
+    # 3 attempts observed, and attempt 2 prompt contains the anti-loop suffix.
+    assert len(prompts_seen) == 3
+    assert "DO NOT repeat" in prompts_seen[2]
+    assert "every minute must have at least one segment" in prompts_seen[2]
+    # Attempt 0 and 1 prompts do NOT include the suffix
+    assert "DO NOT repeat" not in prompts_seen[0]
+    assert "DO NOT repeat" not in prompts_seen[1]
