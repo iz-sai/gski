@@ -1762,7 +1762,546 @@ EOF
 
 ---
 
-## TODO (explicitly not this PR)
+# PART 2 (added 2026-05-08, post-smoke): Aggressive loop & gap handling
+
+**Context:** The initial smoke on `audio-05-08.ogg` (2h05m) passed the happy-path criteria (9 chunks, `last_ts=2:05:15`, no cross-segment loops in merged output), but deeper inspection of `merged.json` revealed two classes of remaining problems that the Task 7-12 pipeline handles poorly:
+
+1. **Silent-middle-skip inside a chunk** (the "gaps" failure mode from deep-research). Chunk 2 produced a 186s gap at ~38:53–41:59 global; chunk 6 produced a 346s gap at ~1:33:43–1:39:29 global. All three retries produced the same gap (±1–2s). `check_gaps` correctly flagged it, pipeline retried 3× with seed/temperature perturbation, got identical output, then silently kept the longest attempt as `best_segments`. The merged transcript contains a ~5-minute hole with **no indication** that content is missing — the reader sees `[1:33:43] ...звонки начать считать` jump straight to `[1:39:29] Ну, блин...`.
+
+2. **Whitespace/token loops that break JSON parsing.** Chunk 6 attempt 2 in the v2 smoke produced 68KB of raw output where the model MAX_TOKENS-ed on a whitespace/indent token (not a word loop — `audioscope_salvage` can't see it because JSON parsing fails first). The chunk was saved by attempts 0+1 returning word-clean output, but if all 3 attempts whitespace-loop, the entire chunk is lost with just a `ChunkTranscriptionError("invalid JSON")` logged.
+
+3. **Deterministic seed ineffectiveness.** Current retry strategy changes only `{seed: 42→43→44, temp: 0.0→0.0→0.1}`. Empirically Gemini produces near-identical output across seeds 42/43/44 when the underlying failure is audio-content-driven (silence region, specific phonetic trigger). Three retries waste API calls without meaningfully exploring alternatives.
+
+**What Part 2 fixes:**
+
+- **Task 14** adds diverse retry strategies that actually change model behaviour (audio re-extraction with offset, prompt variation, shorter chunk sub-split).
+- **Task 15** adds whitespace/non-JSON loop detection before JSON parsing so salvage can trim the raw_text itself.
+- **Task 16** adds explicit `[…gap: Nm Ns untranscribed…]` and `[…chunk lost…]` placeholders in merged output when coverage is incomplete, so data loss is always visible to the reader.
+- **Task 17** integration smoke on the same two files, with pass criteria "no unmarked gaps >180s AND no silent chunk-drops in merged.json".
+
+**Non-goals for Part 2:**
+- Not introducing pyannote, Deepgram, or any new external dep.
+- Not changing the 15min/30s chunk sizes or the flat `{s,t,x}` schema.
+- Not adding `--parallel` or streaming output.
+
+---
+
+## Task 14: Diverse retry strategies (`RETRY_CONFIGS` overhaul)
+
+**Files:**
+- Modify: `gski/audioscope_pipeline.py` (expand `RETRY_CONFIGS`, add retry-strategy dispatcher)
+- Modify: `gski/audioscope_utils.py` (add `extract_chunk_with_offset` helper)
+- Modify: `gski/audioscope_gemini.py` (add `build_prompt_for_chunk_retry` variant)
+- Add: `tests/test_audioscope_pipeline.py` (3 new tests for each retry strategy)
+
+**Current state:**
+```python
+RETRY_CONFIGS = [
+    {"seed": 42, "temperature": 0.0},
+    {"seed": 43, "temperature": 0.0},
+    {"seed": 44, "temperature": 0.1},
+]
+```
+All three re-submit the same audio bytes with the same prompt. Observed: chunks 2 and 6 produce byte-identical gaps across all three.
+
+**New strategy (attempt-indexed):**
+
+```python
+RETRY_STRATEGIES = [
+    # Attempt 0: default hardened config
+    {"kind": "default", "seed": 42, "temperature": 0.0},
+    # Attempt 1: audio perturbation — re-extract with +2s offset on start
+    # (shifts internal model state for the same content, more effective
+    # than seed change against content-driven skips/loops)
+    {"kind": "audio_offset", "seed": 42, "temperature": 0.0, "offset_sec": 2},
+    # Attempt 2: prompt variation — add explicit anti-loop instruction and
+    # higher temperature. Prompt suffix appended by build_prompt_for_chunk_retry.
+    {"kind": "prompt_variant", "seed": 99, "temperature": 0.2,
+     "prompt_suffix": "CRITICAL: if you cannot transcribe a portion of the audio (silence, noise, unclear speech), output a single segment with x=\"[unclear]\" and continue. DO NOT repeat any word or phrase more than 3 times in a single segment. DO NOT skip audio — every minute must have at least one segment."},
+]
+```
+
+**Step 1: Write failing test for `extract_chunk_with_offset`**
+```python
+# tests/test_audioscope_utils.py
+def test_extract_chunk_with_offset_shifts_start(tmp_path, monkeypatch):
+    calls = []
+    def fake_run(cmd, **kw):
+        calls.append(cmd)
+        class R: returncode = 0; stderr = b""
+        return R()
+    monkeypatch.setattr("subprocess.run", fake_run)
+    from gski.audioscope_utils import extract_chunk_with_offset
+    extract_chunk_with_offset("in.ogg", str(tmp_path/"out.ogg"), start=1000, end=1900, offset_sec=2)
+    # ffmpeg -ss should be 1000+2=1002, duration should be 900-2=898 (keep end fixed)
+    assert "1002" in " ".join(calls[0])
+    assert "898" in " ".join(calls[0])
+```
+Run: expect ImportError.
+
+**Step 2: Implement `extract_chunk_with_offset`** in `gski/audioscope_utils.py`:
+```python
+def extract_chunk_with_offset(src, dst, *, start, end, offset_sec):
+    """Extract chunk [start+offset .. end] — shifts only start, preserves end.
+    Used for retry when the model missed content at the beginning of a chunk."""
+    actual_start = start + offset_sec
+    actual_dur = end - actual_start
+    if actual_dur < 60:
+        # offset too large, fall back to regular extraction
+        return extract_chunk(src, dst, start, end)
+    subprocess.run(
+        ["ffmpeg", "-y", "-i", src, "-ss", str(actual_start),
+         "-t", str(actual_dur), "-c", "copy", dst],
+        check=True, capture_output=True,
+    )
+```
+Run test: expect green.
+
+**Step 3: Write failing test for `build_prompt_for_chunk_retry`**
+```python
+# tests/test_audioscope_gemini.py
+def test_prompt_retry_variant_appends_antiloop_instruction():
+    from gski.audioscope_gemini import build_prompt_for_chunk
+    base = build_prompt_for_chunk(chunk_index=0, total_chunks=2,
+                                  chunk_start_sec=0, chunk_duration_sec=900,
+                                  diarize=True, timestamps=True, prev_tail=None,
+                                  extra_instruction="CRITICAL: anti-loop directive here")
+    assert "CRITICAL: anti-loop directive here" in base
+    assert "DO NOT repeat" in base or "anti-loop" in base
+```
+Run: expect fail (kwarg unknown).
+
+**Step 4: Extend `build_prompt_for_chunk`** to accept `extra_instruction: str | None = None` and append it to the prompt tail. Run test: green.
+
+**Step 5: Write failing pipeline integration test**
+```python
+def test_retry_uses_audio_offset_on_second_attempt(tmp_path):
+    """Attempt 1 must call extract_chunk_with_offset (not extract_chunk)."""
+    audio = tmp_path / "x.ogg"
+    audio.write_bytes(b"fake")
+    client = MagicMock()
+
+    # First attempt: gap failure. Second attempt: success.
+    bad = MagicMock()
+    bad.text = '[{"s":"A","t":"00:00","x":"start"}]'  # short → gaps fail
+    bad.candidates = [MagicMock(finish_reason="STOP")]
+    bad.usage_metadata = MagicMock(prompt_token_count=100, candidates_token_count=5)
+    good = MagicMock()
+    good.text = ('[' + ','.join(f'{{"s":"A","t":"{m:02d}:00","x":"minute {m}"}}' for m in range(15)) + ']')
+    good.candidates = [MagicMock(finish_reason="STOP")]
+    good.usage_metadata = MagicMock(prompt_token_count=100, candidates_token_count=50)
+    client.models.generate_content.side_effect = [bad, good]
+    client.files.upload.return_value = MagicMock()
+
+    with patch("gski.audioscope_pipeline.probe_duration", return_value=900), \
+         patch("gski.audioscope_pipeline.extract_chunk") as mock_ex, \
+         patch("gski.audioscope_pipeline.extract_chunk_with_offset") as mock_ex_off:
+        transcribe_long(client, audio_path=str(audio),
+                        model="gemini-3-flash-preview",
+                        diarize=True, timestamps=True,
+                        tmp_dir=tmp_path, output_dir=tmp_path / "out")
+
+    # Attempt 0: regular extract. Attempt 1: offset extract.
+    assert mock_ex.call_count >= 1
+    assert mock_ex_off.call_count == 1
+    _args, kwargs = mock_ex_off.call_args
+    assert kwargs.get("offset_sec") == 2 or 2 in _args
+```
+Run: expect fail (`extract_chunk_with_offset` not imported in pipeline).
+
+**Step 6: Refactor `_transcribe_single_chunk_with_retries`** to dispatch on `strategy["kind"]`:
+
+```python
+RETRY_STRATEGIES = [ ... as above ... ]
+
+def _apply_strategy(strategy, *, chunk, audio_path, tmp_dir, chunk_path):
+    """Prepare the audio file and prompt-extra for a given retry strategy.
+    Returns (chunk_path_to_upload, prompt_extra_or_None)."""
+    kind = strategy["kind"]
+    if kind == "default":
+        return chunk_path, None
+    if kind == "audio_offset":
+        off_path = str(tmp_dir / f"chunk_{chunk.index:03d}.off.ogg")
+        extract_chunk_with_offset(audio_path, off_path,
+                                  start=chunk.start, end=chunk.end,
+                                  offset_sec=strategy["offset_sec"])
+        return off_path, None
+    if kind == "prompt_variant":
+        return chunk_path, strategy["prompt_suffix"]
+    raise ValueError(f"unknown retry strategy: {kind}")
+
+# In the retry loop:
+for attempt_idx, strategy in enumerate(RETRY_STRATEGIES):
+    upload_path, prompt_extra = _apply_strategy(
+        strategy, chunk=chunk, audio_path=audio_path,
+        tmp_dir=tmp_dir, chunk_path=chunk_path,
+    )
+    prompt = build_prompt_for_chunk(
+        ...,
+        extra_instruction=prompt_extra,
+    )
+    config = build_diarize_config(
+        timestamps=timestamps,
+        seed=strategy["seed"],
+        temperature=strategy["temperature"],
+    )
+    uploaded = client.files.upload(file=upload_path)
+    ...
+```
+
+Note: `_transcribe_single_chunk_with_retries` must now receive `audio_path` and `tmp_dir` as parameters — update callers in `transcribe_long`.
+
+**Step 7: Update existing retry tests** (`test_transcribe_long_retries_failed_chunk`, `test_transcribe_long_rejects_looped_segments_as_fallback`) to account for the new strategies. Most should keep working because they mock `client.models.generate_content` directly.
+
+**Step 8: Run full suite** — expect all green (48 previous + 3 new = 51).
+
+**Step 9: Commit**
+```bash
+git add gski/audioscope_pipeline.py gski/audioscope_utils.py gski/audioscope_gemini.py \
+        tests/test_audioscope_pipeline.py tests/test_audioscope_utils.py tests/test_audioscope_gemini.py
+git commit -m "audioscope: diverse retry strategies — audio offset + prompt variant"
+```
+
+---
+
+## Task 15: Whitespace/non-JSON loop detection before parse
+
+**Files:**
+- Modify: `gski/audioscope_gemini.py` (`transcribe_chunk`)
+- Modify: `gski/audioscope_salvage.py` (new function `salvage_raw_text`)
+- Add: `tests/test_audioscope_salvage.py` (3 new tests)
+
+**Root cause:** When Gemini MAX_TOKENS-es on whitespace (or any single character), it emits e.g. `"...text",                                                                  ` (thousands of spaces) before hitting the token limit. The resulting string is invalid JSON. `transcribe_chunk` catches the `JSONDecodeError` and raises `ChunkTranscriptionError`, but the salvageable prefix (the first N valid segments before the whitespace storm) is thrown away.
+
+**Fix:** Before json.loads, scan `raw_text` for massive whitespace or single-character runs. If detected, truncate at the last complete segment boundary (find the last `}`, then the last balanced `]` or cut after the matching comma, append `]` to close array).
+
+**Step 1: Write failing test for `salvage_raw_text`**
+```python
+def test_salvage_raw_text_closes_whitespace_truncated_json():
+    from gski.audioscope_salvage import salvage_raw_text
+    # Simulate MAX_TOKENS on whitespace: valid prefix + whitespace storm.
+    valid = '[{"s":"A","t":"00:00","x":"hello"},{"s":"B","t":"00:05","x":"world"}'
+    # whitespace after the last segment's closing brace, before the array-closing ]
+    broken = valid + "                                                              " * 100
+    cleaned, was_salvaged = salvage_raw_text(broken)
+    assert was_salvaged is True
+    import json as J
+    segs = J.loads(cleaned)  # must parse
+    assert len(segs) == 2
+    assert segs[-1]["x"] == "world"
+
+def test_salvage_raw_text_passthrough_on_valid_json():
+    valid = '[{"s":"A","t":"00:00","x":"hi"}]'
+    cleaned, was = salvage_raw_text(valid)
+    assert was is False
+    assert cleaned == valid
+
+def test_salvage_raw_text_detects_character_loop_inside_segment():
+    # MAX_TOKENS on a single char inside x field before the closing quote.
+    broken = '[{"s":"A","t":"00:00","x":"hello"},{"s":"B","t":"00:05","x":"aaaa' + 'a' * 5000
+    cleaned, was = salvage_raw_text(broken)
+    assert was is True
+    import json as J
+    segs = J.loads(cleaned)
+    assert len(segs) == 1  # only the first complete segment survives
+    assert segs[0]["x"] == "hello"
+```
+Run: expect ImportError.
+
+**Step 2: Implement `salvage_raw_text`** in `gski/audioscope_salvage.py`:
+
+```python
+_WHITESPACE_RUN = re.compile(r"[\s]{50,}")  # 50+ whitespace chars in a row
+_CHAR_RUN = re.compile(r"(.)\1{200,}")       # any char repeated 200+ times
+
+def salvage_raw_text(raw: str) -> tuple[str, bool]:
+    """Detect token-level loops in raw JSON output and truncate to the last
+    complete segment. Returns (repaired_json_string, was_salvaged)."""
+    # Try direct parse first.
+    try:
+        json.loads(raw)
+        return raw, False
+    except json.JSONDecodeError:
+        pass
+
+    # Look for whitespace storm or char loop signature.
+    if not (_WHITESPACE_RUN.search(raw) or _CHAR_RUN.search(raw)):
+        return raw, False  # JSON broken for a different reason; don't touch it
+
+    # Find the last "}," — marks end of a complete segment object.
+    # Walk back from a safe offset to avoid scanning inside the loop tail.
+    cut_point = None
+    depth = 0
+    last_complete = -1
+    in_string = False
+    escape = False
+    for i, ch in enumerate(raw):
+        if escape:
+            escape = False
+            continue
+        if ch == "\\":
+            escape = True
+            continue
+        if ch == '"' and not escape:
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 1:  # just closed one segment inside the outer array
+                last_complete = i
+    if last_complete < 0:
+        return raw, False  # no complete segment found
+    return raw[:last_complete + 1] + "]", True
+```
+
+Run tests: expect green (may need iteration on the depth tracking).
+
+**Step 3: Wire into `transcribe_chunk`** — call `salvage_raw_text` before `json.loads`:
+
+```python
+def transcribe_chunk(client, *, model, audio_part, config, prompt):
+    response = client.models.generate_content(...)
+    raw_text = response.text or ""
+    ...
+    repaired, raw_salvaged = salvage_raw_text(raw_text)
+    try:
+        segments = json.loads(repaired)
+    except json.JSONDecodeError as e:
+        raise ChunkTranscriptionError(f"invalid JSON: {e}", meta={"raw_text": raw_text, "raw_salvaged": raw_salvaged})
+    # Record raw_salvaged in meta so pipeline can log it.
+    return segments, {..., "raw_salvaged": raw_salvaged}
+```
+
+**Step 4: Run full suite** — expect green.
+
+**Step 5: Commit**
+```bash
+git add gski/audioscope_salvage.py gski/audioscope_gemini.py tests/test_audioscope_salvage.py
+git commit -m "audioscope: salvage whitespace/char-loop truncated JSON before parse"
+```
+
+---
+
+## Task 16: Explicit gap & lost-chunk placeholders in merge
+
+**Files:**
+- Modify: `gski/audioscope_merge.py` (inject gap segments)
+- Modify: `gski/audioscope_pipeline.py` (inject lost-chunk placeholder)
+- Add: tests in `tests/test_audioscope_merge.py` and `tests/test_audioscope_pipeline.py`
+
+**Requirement:** Any coverage hole in the final merged transcript must be **visible** to a human reader. No silent data loss.
+
+Two cases:
+- **In-chunk gap** (retries accepted a chunk with `failed=gaps`): model skipped N seconds inside the chunk. Detect during merge by timestamp-diff >180s between consecutive segments within the same chunk (or across merge boundary after dedup). Inject `{"s": "__system__", "t": "<gap_start_ts>", "x": "[…gap: Nm Ns untranscribed…]"}`.
+- **Lost chunk** (`segments=[]` after all retries): entire 15-min block absent. Inject `{"s": "__system__", "t": "<chunk_start_ts>", "x": "[…chunk lost: {chunk.start}s–{chunk.end}s, all retries failed…]"}`.
+
+**Step 1: Write failing tests for merge gap insertion**
+```python
+# tests/test_audioscope_merge.py
+def test_merge_inserts_gap_placeholder_when_adjacent_segs_have_big_time_diff():
+    from gski.audioscope_merge import merge_chunks
+    from gski.audioscope_utils import ChunkSpec
+    c0 = ChunkSpec(index=0, start=0, end=900, duration=900)
+    segs0 = [
+        {"s":"A","t":"00:00","x":"hello"},
+        {"s":"A","t":"01:00","x":"first minute"},
+        # gap from 01:00 to 08:00 = 420s >180s threshold
+        {"s":"A","t":"08:00","x":"jump ahead"},
+    ]
+    merged = merge_chunks([(c0, segs0)])
+    # between 01:00 and 08:00 there should be a __system__ placeholder
+    texts = [s["x"] for s in merged]
+    assert any("gap" in t.lower() and "untranscribed" in t.lower() for t in texts)
+    # placeholder timestamp inside the gap
+    for s in merged:
+        if "gap" in s["x"].lower():
+            assert s["s"] == "__system__"
+            # format: ..:.. → somewhere between 01:00 and 08:00
+            break
+
+def test_merge_no_placeholder_for_small_gap():
+    from gski.audioscope_merge import merge_chunks
+    from gski.audioscope_utils import ChunkSpec
+    c0 = ChunkSpec(index=0, start=0, end=900, duration=900)
+    segs0 = [{"s":"A","t":"00:00","x":"a"}, {"s":"A","t":"01:30","x":"b"}]  # 90s gap, OK
+    merged = merge_chunks([(c0, segs0)])
+    assert all("gap" not in s["x"].lower() for s in merged)
+```
+Run: expect fail.
+
+**Step 2: Implement in `merge_chunks`** — after offset shift, walk through the final sequence, detect `parse_ts(cur) - parse_ts(prev) > 180` (config constant), insert `{"s":"__system__","t":"<midpoint_ts>","x":f"[…gap: {dur//60}m {dur%60}s untranscribed…]"}` between them.
+
+Run test: green.
+
+**Step 3: Write failing test for lost-chunk placeholder in pipeline**
+```python
+def test_transcribe_long_inserts_lost_chunk_placeholder(tmp_path):
+    """If a chunk returns no segments after all retries, merged output must
+    contain a __system__ placeholder marking the lost time range."""
+    audio = tmp_path / "x.ogg"
+    audio.write_bytes(b"fake")
+    client = MagicMock()
+
+    # Chunk 0: good. Chunk 1: all retries raise JSON error → empty segments.
+    good = MagicMock()
+    good.text = ('[' + ','.join(f'{{"s":"A","t":"{m:02d}:00","x":"m{m}"}}' for m in range(15)) + ']')
+    good.candidates = [MagicMock(finish_reason="STOP")]
+    good.usage_metadata = MagicMock(prompt_token_count=100, candidates_token_count=50)
+    bad = MagicMock()
+    bad.text = 'total garbage not json'
+    bad.candidates = [MagicMock(finish_reason="MAX_TOKENS")]
+    bad.usage_metadata = MagicMock(prompt_token_count=100, candidates_token_count=32000)
+    # duration=1770 → 2 chunks. Chunk 0: good. Chunk 1: bad × 3 retries.
+    client.models.generate_content.side_effect = [good, bad, bad, bad]
+    client.files.upload.return_value = MagicMock()
+
+    with patch("gski.audioscope_pipeline.probe_duration", return_value=1770), \
+         patch("gski.audioscope_pipeline.extract_chunk"), \
+         patch("gski.audioscope_pipeline.extract_chunk_with_offset"):
+        result = transcribe_long(client, audio_path=str(audio),
+                                 model="gemini-3-flash-preview",
+                                 diarize=True, timestamps=True,
+                                 tmp_dir=tmp_path, output_dir=tmp_path / "out")
+
+    # merged.json must contain the __system__ lost-chunk marker
+    texts = [s["x"] for s in result["segments"]]
+    assert any("chunk lost" in t.lower() for t in texts)
+    # system segment must have __system__ speaker
+    for s in result["segments"]:
+        if "chunk lost" in s["x"].lower():
+            assert s["s"] == "__system__"
+            break
+```
+Run: expect fail.
+
+**Step 4: Implement** in `transcribe_long` — after `_transcribe_single_chunk_with_retries` returns empty segments, append a synthetic single-segment list:
+```python
+if not segments:
+    segments = [{
+        "s": "__system__",
+        "t": _sec_to_ts(chunk.start),
+        "x": f"[…chunk lost: {chunk.start}s–{chunk.end}s, all retries failed…]",
+    }]
+    warnings.append(f"chunk {chunk.index}: inserted lost-chunk placeholder")
+```
+(use existing `_sec_to_ts` or parse_ts inverse; add if missing).
+
+Run test: green.
+
+**Step 5: Update `format_diarize` in `audioscope.py`** to render `__system__` speaker differently (e.g. italicized or with `[SYSTEM]` prefix) so it stands out in human-readable output. Test via existing CLI parser test or add one.
+
+**Step 6: Run full suite** — expect all green (51 + 4 new = 55 tests).
+
+**Step 7: Commit**
+```bash
+git add gski/audioscope_merge.py gski/audioscope_pipeline.py gski/audioscope.py \
+        tests/test_audioscope_merge.py tests/test_audioscope_pipeline.py
+git commit -m "audioscope: insert __system__ gap/lost-chunk placeholders in merged output"
+```
+
+---
+
+## Task 17: Re-smoke on audio-05-08 and audio-05-07
+
+**Files:** none (manual execution + results in PR body)
+
+**Step 1: Clean previous runs and re-run 2h file**
+```bash
+rm -rf /tmp/audioscope-smoke-05-08-v3
+gski audioscope \
+  --audio /Users/iz/work/tasks/google-meet-transcribe/tests/audio-05-08.ogg \
+  --diarize --timestamps --model flash \
+  --output-dir /tmp/audioscope-smoke-05-08-v3 \
+  2>&1 | tee /tmp/smoke-05-08-v3.log
+```
+
+**Step 2: Verify pass criteria**
+```bash
+python3 - <<'PY'
+import json, re, glob
+from collections import Counter
+from gski.audioscope_utils import parse_ts
+
+p = glob.glob("/tmp/audioscope-smoke-05-08-v3/audioscope_*/merged.json")[-1]
+segs = json.load(open(p))
+
+# 1. Last ts reaches near end of audio (expect ~2:05:2x)
+last = segs[-1]["t"]
+print(f"last ts: {last}")
+assert parse_ts(last) > 2*3600 + 4*60, f"last_ts too early: {last}"
+
+# 2. No cross-segment 5-gram repeated >10x
+tokens = [w for s in segs for w in re.findall(r'\w+', s['x'].lower()) if s['s'] != '__system__']
+shingles = [tuple(tokens[i:i+5]) for i in range(len(tokens)-4)]
+top_sh, top_c = Counter(shingles).most_common(1)[0]
+print(f"top 5-gram: {top_c}x {top_sh}")
+assert top_c <= 10, f"loop detected: {top_sh} x{top_c}"
+
+# 3. No intra-segment single-token >50 repeats
+for i, s in enumerate(segs):
+    if s['s'] == '__system__':
+        continue
+    toks = re.findall(r'\w+', s['x'].lower())
+    if toks:
+        t, c = Counter(toks).most_common(1)[0]
+        assert c < 50, f"intra-loop seg {i}: '{t}' x{c}"
+
+# 4. Every gap >180s must have a __system__ placeholder
+real_segs = segs
+prev_sec = None
+for i, s in enumerate(real_segs):
+    try: cur = parse_ts(s['t'])
+    except: continue
+    if prev_sec is not None and cur - prev_sec > 180:
+        # previous or next segment should be __system__ with "gap" marker
+        context = real_segs[max(0,i-2):min(len(real_segs),i+2)]
+        assert any('__system__' in x['s'] or 'gap' in x['x'].lower() or 'chunk lost' in x['x'].lower()
+                   for x in context), \
+               f"unmarked gap {cur-prev_sec}s at seg {i} @ {s['t']}"
+    prev_sec = cur
+
+print("ALL PASS CRITERIA MET")
+PY
+```
+
+**Step 3: Same for 2.5h file** (`audio-05-07.ogg`). Expect: last_ts close to 2:19:xx, no unmarked gaps.
+
+**Step 4: Smoke results into PR body** — replace the placeholder `## Smoke test results` section in the PR with actual numbers:
+- file / duration / chunks / last_ts / segments / gap-markers-count / lost-chunk-markers-count / retries-used-by-strategy
+
+**Step 5: Commit empty marker if desired**
+```bash
+git commit --allow-empty -m "smoke v3: part-2 fixes verified on audio-05-08 and audio-05-07"
+```
+
+---
+
+## Part 2 completion criteria
+
+- [ ] 55+ tests green (48 current + ~7 new)
+- [ ] Smoke v3 on both 2h and 2.5h files passes all four assertions in Task 17 Step 2
+- [ ] `merged.json` for audio-05-08.ogg contains zero unmarked gaps >180s
+- [ ] `merged.json` for audio-05-08.ogg chunk 6 region (1:27:00–1:42:00) is either fully covered OR contains visible `__system__` gap/lost markers for missing portions
+- [ ] PR description updated with Part 2 changes summary and smoke v3 results
+
+---
+
+## TODO (explicitly not Part 2 either)
+
+- pyannote 3.1 global-first hybrid diarization (`--diarize-engine pyannote`)
+- Parallel chunk processing (`--parallel N`)
+- LLM-as-judge validator via Flash-Lite
+- Deepgram Nova-3 / ElevenLabs Scribe fallback on persistent failure
+- Streaming output (`generate_content_stream`) — research says no material benefit, leave as optional UX improvement
+- Sub-chunk re-submission for stubborn gaps (if a single chunk has repeated gaps across all 3 strategies, split it into 2×450s halves and retry) — evaluate in Part 3 only if Part 2 isn't sufficient
+
+---
+
+## Original TODO (kept for reference)
 
 - pyannote 3.1 global-first hybrid diarization (`--diarize-engine pyannote`)
 - Parallel chunk processing (`--parallel N`)
