@@ -45,3 +45,38 @@ def test_build_prompt_with_prev_tail_injects_context():
     )
     assert "Speaker 1" in p
     assert "last words" in p
+
+
+def test_transcribe_chunk_parses_valid_json():
+    client = MagicMock()
+    response = MagicMock()
+    response.text = '[{"s":"Speaker 1","t":"00:05","x":"hi"}]'
+    response.candidates = [MagicMock(finish_reason="STOP")]
+    response.usage_metadata = MagicMock(prompt_token_count=100, candidates_token_count=20)
+    client.models.generate_content.return_value = response
+
+    segs, meta = transcribe_chunk(
+        client, model="gemini-3-flash-preview",
+        audio_part=MagicMock(), config=None, prompt="test",
+    )
+    assert segs == [{"s": "Speaker 1", "t": "00:05", "x": "hi"}]
+    assert meta["finish_reason"] == "STOP"
+    assert meta["input_tokens"] == 100
+    assert meta["output_tokens"] == 20
+
+
+def test_transcribe_chunk_raises_on_invalid_json():
+    client = MagicMock()
+    response = MagicMock()
+    response.text = '[{"s":"Sp'
+    response.candidates = [MagicMock(finish_reason="MAX_TOKENS")]
+    response.usage_metadata = MagicMock(prompt_token_count=100, candidates_token_count=20)
+    client.models.generate_content.return_value = response
+
+    with pytest.raises(ChunkTranscriptionError) as e:
+        transcribe_chunk(
+            client, model="gemini-3-flash-preview",
+            audio_part=MagicMock(), config=None, prompt="test",
+        )
+    assert e.value.meta["finish_reason"] == "MAX_TOKENS"
+    assert "[{" in e.value.meta["raw_text"]
