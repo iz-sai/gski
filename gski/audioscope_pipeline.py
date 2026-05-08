@@ -18,6 +18,7 @@ from gski.audioscope_validators import (
     check_loop,
     check_gaps,
 )
+from gski.audioscope_salvage import salvage_segments
 from gski.audioscope_merge import merge_chunks
 
 
@@ -94,6 +95,11 @@ def _transcribe_single_chunk_with_retries(
             )
             continue
 
+        # Cut intra-segment repetition loops before validation. Gemini
+        # occasionally MAX_TOKENS-es on a single word ('на' x1600+); we trim
+        # those to a placeholder while preserving any clean prefix.
+        segments, salvaged = salvage_segments(segments)
+
         failed_check, reason = _validate_chunk(segments, chunk.duration)
         ok = failed_check is None
         attempts.append(
@@ -102,12 +108,19 @@ def _transcribe_single_chunk_with_retries(
                 "ok": ok,
                 "failed_check": failed_check,
                 "reason": reason,
+                "salvaged": salvaged,
                 "meta": meta,
                 "segment_count": len(segments),
                 "overrides": overrides,
             }
         )
         if ok:
+            return segments, attempts
+        # If salvage had to cut a loop, the model is stuck on this chunk;
+        # retrying with a different seed has empirically produced the same
+        # loop. Accept the salvaged prefix (clean content + placeholder) as
+        # best and stop retrying.
+        if salvaged and check_loop(segments).ok:
             return segments, attempts
         # Only keep as fallback if NOT contaminated by a repetition loop.
         # Duration/gap failures may still yield usable partial content; loops

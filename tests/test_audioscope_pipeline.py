@@ -116,8 +116,8 @@ def test_transcribe_long_retries_failed_chunk(tmp_path):
 
 
 def test_transcribe_long_rejects_looped_segments_as_fallback(tmp_path):
-    """If all retries fail and the longest attempt contains an intra-segment loop,
-    do NOT use it as best-effort fallback — prefer empty output (so merge skips)."""
+    """If Gemini MAX_TOKENS-es on a repeated word, the looped content must be
+    cut and replaced with a placeholder — not leaked into merged output."""
     audio = tmp_path / "x.ogg"
     audio.write_bytes(b"fake")
     client = MagicMock()
@@ -127,14 +127,15 @@ def test_transcribe_long_rejects_looped_segments_as_fallback(tmp_path):
     looped_text = "na " * 1200
     looped = MagicMock()
     looped.text = (
-        '[{"s":"Speaker 1","t":"00:05","x":"hello"},'
-        '{"s":"Speaker 2","t":"00:14","x":"' + looped_text.strip() + '"}]'
+        '[{"s":"Speaker 1","t":"00:05","x":"hello clean prefix content"},'
+        '{"s":"Speaker 2","t":"00:14","x":"intro words then ' + looped_text.strip() + '"}]'
     )
     looped.candidates = [MagicMock(finish_reason="STOP")]
     looped.usage_metadata = MagicMock(prompt_token_count=100, candidates_token_count=8000)
 
-    # Single chunk. All 3 retries return the same looped (and short-duration) output.
-    client.models.generate_content.side_effect = [looped, looped, looped]
+    # Single chunk. Even one response is enough — salvage cuts the loop and
+    # the chunk is accepted on attempt 0.
+    client.models.generate_content.side_effect = [looped]
     client.files.upload.return_value = MagicMock()
 
     with patch("gski.audioscope_pipeline.probe_duration", return_value=900), \
@@ -147,12 +148,11 @@ def test_transcribe_long_rejects_looped_segments_as_fallback(tmp_path):
             chunk_len_sec=900, overlap_sec=30,
         )
 
-    # All 3 attempts failed validation; looped segment must NOT appear in merged output.
     assert result["num_chunks"] == 1
+    # Loop must be gone; clean prefix preserved; placeholder inserted
     for seg in result["segments"]:
-        assert "na na na na na" not in seg["x"].lower(), (
-            f"looped segment leaked into merged output: {seg}"
-        )
-    # warning reported for the dropped chunk
-    assert any("no valid segments" in w or "validation failures" in w
-               for w in result["warnings"])
+        assert "na na na na na" not in seg["x"].lower()
+    joined = " ".join(s["x"] for s in result["segments"])
+    assert "hello clean prefix content" in joined
+    assert "intro words" in joined
+    assert "[\u2026cut: repetition loop\u2026]" in joined
