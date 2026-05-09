@@ -64,6 +64,31 @@ gski audioscope --audio part1.mp3 --audio part2.mp3 --diarize
 - **`--timestamps`**: timestamps included in output segments
 - All output files saved to `--output-dir` (created automatically)
 
+### Output layout
+
+**All diarize modes produce** `<output-dir>/audioscope_<TS>.json` — legacy dict shape
+`{"summary": "", "segments": [{"speaker": "...", "timestamp": "...", "content": "..."}, ...]}`.
+This is the file downstream scripts should read.
+
+**Short-audio mode** additionally writes `audioscope_<TS>.raw.txt`
+(raw Gemini response, used for debugging parse failures).
+
+**Long-audio mode** (>~16 min, auto-triggered) additionally writes a
+debug directory `audioscope_<TS>/` containing:
+- `merged.json` — same segments in flat `{s,t,x}` schema
+- `chunk_NNN.meta.json` — per-chunk retry attempts, strategies, validation reasons
+- `chunk_NNN.raw.txt` — raw Gemini response for the last attempt of each chunk
+
+Downstream consumers (meet-transcribe, vm-transcribe) see one `.json`
+per run at the output root regardless of chunked/non-chunked mode — they
+do not need to know which path was taken.
+
+The system speaker `__system__` is used for gap/lost-chunk placeholders
+injected automatically when the model skips audio or a chunk fails all
+retries. Downstream formatters can filter these out or render them
+distinctly; they are semantically "transcript coverage metadata", not
+real speech.
+
 ## Supported formats
 
 WAV, MP3, AIFF, AAC, OGG, FLAC
