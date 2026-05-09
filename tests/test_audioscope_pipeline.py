@@ -1,3 +1,4 @@
+import json
 from unittest.mock import MagicMock, patch
 
 from gski.audioscope_pipeline import transcribe_long
@@ -285,3 +286,43 @@ def test_transcribe_long_inserts_lost_chunk_placeholder(tmp_path):
     # warnings list must mention the placeholder
     assert any("lost-chunk placeholder" in w or "no valid segments" in w
                for w in result["warnings"])
+
+
+def test_flat_to_legacy_converts_keys_and_wraps_in_dict():
+    from gski.audioscope_pipeline import flat_segments_to_legacy_dict
+    flat = [
+        {"s": "Speaker 1", "t": "00:05", "x": "hello"},
+        {"s": "Speaker 2", "t": "00:14", "x": "world"},
+    ]
+    out = flat_segments_to_legacy_dict(flat)
+    assert isinstance(out, dict)
+    assert out.get("summary") == ""
+    assert out["segments"] == [
+        {"speaker": "Speaker 1", "timestamp": "00:05", "content": "hello"},
+        {"speaker": "Speaker 2", "timestamp": "00:14", "content": "world"},
+    ]
+
+
+def test_flat_to_legacy_preserves_system_speaker():
+    from gski.audioscope_pipeline import flat_segments_to_legacy_dict
+    flat = [
+        {"s": "__system__", "t": "47:33", "x": "[\u2026gap: 14m 53s untranscribed\u2026]"},
+    ]
+    out = flat_segments_to_legacy_dict(flat)
+    assert out["segments"][0]["speaker"] == "__system__"
+    assert out["segments"][0]["content"].startswith("[\u2026gap:")
+
+
+def test_flat_to_legacy_handles_missing_timestamp():
+    from gski.audioscope_pipeline import flat_segments_to_legacy_dict
+    flat = [{"s": "A", "x": "no ts here"}]  # t missing (diarize without timestamps)
+    out = flat_segments_to_legacy_dict(flat)
+    assert out["segments"][0]["timestamp"] == ""
+    assert out["segments"][0]["speaker"] == "A"
+    assert out["segments"][0]["content"] == "no ts here"
+
+
+def test_flat_to_legacy_empty_list():
+    from gski.audioscope_pipeline import flat_segments_to_legacy_dict
+    out = flat_segments_to_legacy_dict([])
+    assert out == {"summary": "", "segments": []}

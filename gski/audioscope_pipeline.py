@@ -308,3 +308,14 @@ def transcribe_long(
         "duration_sec": duration,
         "num_chunks": len(chunks),
     }
+
+
+def flat_segments_to_legacy_dict(segments: list[dict]) -> dict:
+    out = []
+    for seg in segments:
+        out.append({
+            "speaker": seg.get("s", ""),
+            "timestamp": seg.get("t", ""),
+            "content": seg.get("x", ""),
+        })
+    return {"summary": "", "segments": out}
