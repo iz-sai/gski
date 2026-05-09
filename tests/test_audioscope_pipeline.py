@@ -237,3 +237,51 @@ def test_retry_uses_prompt_variant_on_third_attempt(tmp_path):
     # Attempt 0 and 1 prompts do NOT include the suffix
     assert "DO NOT repeat" not in prompts_seen[0]
     assert "DO NOT repeat" not in prompts_seen[1]
+
+
+def test_transcribe_long_inserts_lost_chunk_placeholder(tmp_path):
+    """If a chunk returns no segments after all retries, merged output must
+    contain a __system__ placeholder marking the lost time range."""
+    audio = tmp_path / "x.ogg"
+    audio.write_bytes(b"fake")
+    client = MagicMock()
+
+    # Chunk 0: good. Chunk 1: all retries raise JSON error → empty segments.
+    good_segs = [
+        f'{{"s":"A","t":"{m:02d}:00","x":"m{m}"}}' for m in range(15)
+    ]
+    good = MagicMock()
+    good.text = "[" + ",".join(good_segs) + "]"
+    good.candidates = [MagicMock(finish_reason="STOP")]
+    good.usage_metadata = MagicMock(prompt_token_count=100, candidates_token_count=50)
+    bad = MagicMock()
+    bad.text = "total garbage not json"
+    bad.candidates = [MagicMock(finish_reason="MAX_TOKENS")]
+    bad.usage_metadata = MagicMock(prompt_token_count=100, candidates_token_count=32000)
+    # duration=1770 → 2 chunks. Chunk 0: good. Chunk 1: bad × 3 retries.
+    client.models.generate_content.side_effect = [good, bad, bad, bad]
+    client.files.upload.return_value = MagicMock()
+
+    with patch("gski.audioscope_pipeline.probe_duration", return_value=1770), \
+         patch("gski.audioscope_pipeline.extract_chunk"), \
+         patch("gski.audioscope_pipeline.extract_chunk_with_offset"):
+        result = transcribe_long(
+            client, audio_path=str(audio),
+            model="gemini-3-flash-preview",
+            diarize=True, timestamps=True,
+            tmp_dir=tmp_path, output_dir=tmp_path / "out",
+        )
+
+    # merged output must contain the __system__ lost-chunk marker.
+    texts = [s["x"] for s in result["segments"]]
+    assert any("chunk lost" in t.lower() for t in texts)
+    # system segment must have __system__ speaker.
+    for s in result["segments"]:
+        if "chunk lost" in s["x"].lower():
+            assert s["s"] == "__system__"
+            break
+    else:
+        raise AssertionError("no lost-chunk marker found")
+    # warnings list must mention the placeholder
+    assert any("lost-chunk placeholder" in w or "no valid segments" in w
+               for w in result["warnings"])

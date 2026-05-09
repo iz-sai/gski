@@ -7,6 +7,7 @@ from gski.audioscope_utils import (
     plan_chunks,
     extract_chunk,
     extract_chunk_with_offset,
+    format_ts,
 )
 from gski.audioscope_gemini import (
     build_diarize_config,
@@ -274,15 +275,24 @@ def transcribe_long(
         chunks_meta.append(chunk_record)
         if not segments:
             warnings.append(
-                f"chunk {chunk.index} ({chunk.start}..{chunk.end}s) produced no valid segments"
+                f"chunk {chunk.index} ({chunk.start}..{chunk.end}s) produced no valid segments; inserted lost-chunk placeholder"
             )
+            segments = [
+                {
+                    "s": "__system__",
+                    "t": format_ts(chunk.start),
+                    "x": f"[\u2026chunk lost: {chunk.start}s\u2013{chunk.end}s, all retries failed\u2026]",
+                }
+            ]
         elif not any(a.get("ok") for a in attempts):
             warnings.append(
                 f"chunk {chunk.index} ({chunk.start}..{chunk.end}s) accepted with validation failures"
             )
         chunk_results.append((chunk, segments))
         if segments:
-            prev_tail = segments[-TAIL_SEGMENTS_FOR_CONTEXT:]
+            # Only carry over real segments for context, skip system markers.
+            real = [s for s in segments if s.get("s") != "__system__"]
+            prev_tail = real[-TAIL_SEGMENTS_FOR_CONTEXT:] if real else prev_tail
 
     merged = merge_chunks(chunk_results)
 

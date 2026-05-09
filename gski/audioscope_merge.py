@@ -1,9 +1,11 @@
 from difflib import SequenceMatcher
 
-from gski.audioscope_utils import ChunkSpec, parse_ts, shift_ts
+from gski.audioscope_utils import ChunkSpec, format_ts, parse_ts, shift_ts
 
 
 DUP_SIMILARITY_THRESHOLD = 0.6
+GAP_PLACEHOLDER_THRESHOLD_SEC = 180
+SYSTEM_SPEAKER = "__system__"
 
 
 def _shift_segments(segments, offset_sec):
@@ -61,7 +63,38 @@ def merge_chunks(chunk_results: list[tuple[ChunkSpec, list[dict]]]) -> list[dict
 
         merged.extend(deduped)
 
-    return merged
+    return _insert_gap_placeholders(merged)
+
+
+def _insert_gap_placeholders(segments: list[dict]) -> list[dict]:
+    if not segments:
+        return segments
+    out: list[dict] = []
+    prev_sec: int | None = None
+    for seg in segments:
+        if seg.get("s") == SYSTEM_SPEAKER:
+            out.append(seg)
+            # don't update prev_sec based on system markers — they don't
+            # represent real coverage
+            continue
+        cur_sec = _safe_parse(seg.get("t") or "")
+        if prev_sec is not None and cur_sec is not None:
+            diff = cur_sec - prev_sec
+            if diff > GAP_PLACEHOLDER_THRESHOLD_SEC:
+                mid = prev_sec + diff // 2
+                mins = diff // 60
+                secs = diff % 60
+                out.append(
+                    {
+                        "s": SYSTEM_SPEAKER,
+                        "t": format_ts(mid),
+                        "x": f"[\u2026gap: {mins}m {secs}s untranscribed\u2026]",
+                    }
+                )
+        out.append(seg)
+        if cur_sec is not None:
+            prev_sec = cur_sec
+    return out
 
 
 def _safe_parse(ts: str):

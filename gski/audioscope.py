@@ -157,7 +157,10 @@ def format_diarize(data):
         speaker = seg.get("s") or seg.get("speaker") or "Unknown"
         ts = seg.get("t") or seg.get("timestamp") or ""
         text = seg.get("x") or seg.get("content") or ""
-        prefix = f"[{ts}] {speaker}" if ts else speaker
+        if speaker == "__system__":
+            prefix = f"[{ts}] [SYSTEM]" if ts else "[SYSTEM]"
+        else:
+            prefix = f"[{ts}] {speaker}" if ts else speaker
         lines.append(f"{prefix}: {text}")
     return "\n".join(lines)
 
