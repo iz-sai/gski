@@ -326,3 +326,57 @@ def test_flat_to_legacy_empty_list():
     from gski.audioscope_pipeline import flat_segments_to_legacy_dict
     out = flat_segments_to_legacy_dict([])
     assert out == {"summary": "", "segments": []}
+
+
+def test_cli_chunked_writes_legacy_json_at_output_root(tmp_path, monkeypatch):
+    import types
+    from gski import audioscope as cli
+
+    audio = tmp_path / "x.ogg"
+    audio.write_bytes(b"fake")
+    out_dir = tmp_path / "out"
+
+    client = MagicMock()
+    def fake_generate(model, contents, config):
+        r = MagicMock()
+        r.candidates = [MagicMock(finish_reason="STOP")]
+        r.usage_metadata = MagicMock(prompt_token_count=100, candidates_token_count=50)
+        idx = client.models.generate_content.call_count - 1
+        segs = [
+            f'{{"s":"Speaker 1","t":"{m:02d}:00","x":"chunk {idx} min {m}"}}'
+            for m in range(15)
+        ]
+        r.text = "[" + ",".join(segs) + "]"
+        return r
+    client.models.generate_content.side_effect = fake_generate
+    client.files.upload.return_value = MagicMock()
+
+    monkeypatch.setenv("GEMINI_API_KEY", "fake")
+
+    args = types.SimpleNamespace(
+        prompt=None, audio=[str(audio)], youtube=[], model="flash",
+        diarize=True, timestamps=True, output_dir=str(out_dir),
+        chunk_len_sec=900, overlap_sec=30, no_chunking=False,
+    )
+
+    with patch("gski.audioscope.genai.Client", return_value=client), \
+         patch("gski.audioscope_utils.probe_duration", return_value=1770), \
+         patch("gski.audioscope_pipeline.probe_duration", return_value=1770), \
+         patch("gski.audioscope_pipeline.extract_chunk"), \
+         patch("gski.audioscope_pipeline.extract_chunk_with_offset"):
+        cli.run(args)
+
+    top_json = list(out_dir.glob("audioscope_*.json"))
+    debug_dirs = [p for p in out_dir.iterdir() if p.is_dir() and p.name.startswith("audioscope_")]
+    assert len(top_json) == 1, f"expected 1 top-level json, got {top_json}"
+    assert len(debug_dirs) == 1, f"expected 1 debug dir, got {debug_dirs}"
+    assert top_json[0].stem == debug_dirs[0].name
+
+    data = json.loads(top_json[0].read_text())
+    assert isinstance(data, dict)
+    assert "segments" in data
+    assert data["segments"]
+    first = data["segments"][0]
+    assert set(first.keys()) >= {"speaker", "timestamp", "content"}
+    assert first["speaker"] == "Speaker 1"
+    assert first["content"].startswith("chunk 0 min")

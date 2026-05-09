@@ -292,7 +292,18 @@ def run(args):
             print(format_diarize(result["segments"]))
             for w in result["warnings"]:
                 print(f"warning: {w}", file=sys.stderr)
-            print(f"\nsaved: {result['run_dir']}", file=sys.stderr)
+            # Write top-level legacy-shape JSON alongside the debug run dir, so
+            # downstream consumers (meet-transcribe, vm-transcribe) that
+            # glob output_dir/*.json keep working.
+            from gski.audioscope_pipeline import flat_segments_to_legacy_dict
+            run_dir_path = Path(result["run_dir"])
+            legacy_json_path = output_dir / f"{run_dir_path.name}.json"
+            legacy = flat_segments_to_legacy_dict(result["segments"])
+            legacy_json_path.write_text(
+                json.dumps(legacy, indent=2, ensure_ascii=False)
+            )
+            print(f"\nsaved: {legacy_json_path}", file=sys.stderr)
+            print(f"debug artifacts: {run_dir_path}", file=sys.stderr)
             return
 
     # Short-audio / non-diarize path: single-shot with hardened config for diarize.
