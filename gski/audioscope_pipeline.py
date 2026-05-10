@@ -300,6 +300,20 @@ def transcribe_long(
         json.dumps(merged, indent=2, ensure_ascii=False)
     )
 
+    coverage = summarize_coverage(merged)
+    if coverage["total_untranscribed_sec"] > 0:
+        parts = []
+        if coverage["gap_count"]:
+            g = coverage["gap_seconds"]
+            parts.append(f"{coverage['gap_count']} gap(s) totalling {g // 60}m {g % 60}s")
+        if coverage["lost_chunk_count"]:
+            l = coverage["lost_chunk_seconds"]
+            parts.append(f"{coverage['lost_chunk_count']} lost chunk(s) totalling {l // 60}m {l % 60}s")
+        warnings.append(
+            "coverage: " + ", ".join(parts)
+            + " untranscribed (see segments with speaker \"__system__\")"
+        )
+
     return {
         "segments": merged,
         "chunks_meta": chunks_meta,
@@ -307,6 +321,37 @@ def transcribe_long(
         "run_dir": str(run_dir),
         "duration_sec": duration,
         "num_chunks": len(chunks),
+        "coverage": coverage,
+    }
+
+
+def summarize_coverage(segments: list[dict]) -> dict:
+    import re
+    gap_count = 0
+    gap_seconds = 0
+    lost_count = 0
+    lost_seconds = 0
+    gap_re = re.compile(r"gap:\s*(\d+)m\s*(\d+)s")
+    lost_re = re.compile(r"chunk lost:\s*(\d+)s\s*[\u2013-]\s*(\d+)s")
+    for seg in segments:
+        if seg.get("s") != "__system__":
+            continue
+        text = seg.get("x", "")
+        m = gap_re.search(text)
+        if m:
+            gap_count += 1
+            gap_seconds += int(m.group(1)) * 60 + int(m.group(2))
+            continue
+        m = lost_re.search(text)
+        if m:
+            lost_count += 1
+            lost_seconds += int(m.group(2)) - int(m.group(1))
+    return {
+        "gap_count": gap_count,
+        "lost_chunk_count": lost_count,
+        "gap_seconds": gap_seconds,
+        "lost_chunk_seconds": lost_seconds,
+        "total_untranscribed_sec": gap_seconds + lost_seconds,
     }
 
 

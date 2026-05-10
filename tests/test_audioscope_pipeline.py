@@ -380,3 +380,72 @@ def test_cli_chunked_writes_legacy_json_at_output_root(tmp_path, monkeypatch):
     assert set(first.keys()) >= {"speaker", "timestamp", "content"}
     assert first["speaker"] == "Speaker 1"
     assert first["content"].startswith("chunk 0 min")
+
+
+def test_coverage_summary_reports_gaps_and_lost_chunks():
+    from gski.audioscope_pipeline import summarize_coverage
+    merged = [
+        {"s": "A", "t": "00:00", "x": "a"},
+        {"s": "__system__", "t": "02:00", "x": "[\u2026gap: 3m 36s untranscribed\u2026]"},
+        {"s": "B", "t": "05:36", "x": "b"},
+        {"s": "__system__", "t": "10:00", "x": "[\u2026chunk lost: 600s\u2013900s, all retries failed\u2026]"},
+        {"s": "C", "t": "15:00", "x": "c"},
+    ]
+    cov = summarize_coverage(merged)
+    assert cov["gap_count"] == 1
+    assert cov["lost_chunk_count"] == 1
+    assert cov["gap_seconds"] == 216  # 3m 36s
+    assert cov["lost_chunk_seconds"] == 300  # 900 - 600
+    assert cov["total_untranscribed_sec"] == 516
+
+
+def test_coverage_summary_zero_when_clean():
+    from gski.audioscope_pipeline import summarize_coverage
+    merged = [
+        {"s": "A", "t": "00:00", "x": "hi"},
+        {"s": "B", "t": "00:05", "x": "hey"},
+    ]
+    cov = summarize_coverage(merged)
+    assert cov == {
+        "gap_count": 0, "lost_chunk_count": 0,
+        "gap_seconds": 0, "lost_chunk_seconds": 0,
+        "total_untranscribed_sec": 0,
+    }
+
+
+def test_transcribe_long_emits_coverage_warning_when_gaps_present(tmp_path):
+    from gski.audioscope_pipeline import transcribe_long
+    audio = tmp_path / "x.ogg"
+    audio.write_bytes(b"fake")
+
+    client = MagicMock()
+    # Return sparse segments so _insert_gap_placeholders creates a gap.
+    def fake_generate(model, contents, config):
+        r = MagicMock()
+        r.candidates = [MagicMock(finish_reason="STOP")]
+        r.usage_metadata = MagicMock(prompt_token_count=100, candidates_token_count=50)
+        idx = client.models.generate_content.call_count - 1
+        # First chunk: dense segments. Second chunk: starts 5 minutes after prev ends → gap.
+        if idx == 0:
+            segs = [f'{{"s":"Speaker 1","t":"{m:02d}:00","x":"chunk 0 min {m}"}}' for m in range(15)]
+        else:
+            segs = [f'{{"s":"Speaker 1","t":"20:00","x":"chunk 1 late"}}']
+        r.text = "[" + ",".join(segs) + "]"
+        return r
+    client.models.generate_content.side_effect = fake_generate
+    client.files.upload.return_value = MagicMock()
+
+    with patch("gski.audioscope_pipeline.probe_duration", return_value=1770), \
+         patch("gski.audioscope_pipeline.extract_chunk"), \
+         patch("gski.audioscope_pipeline.extract_chunk_with_offset"):
+        result = transcribe_long(
+            client, audio_path=str(audio), model="flash",
+            diarize=True, timestamps=True,
+            tmp_dir=tmp_path, output_dir=tmp_path / "out",
+        )
+
+    # Expect coverage summary warning string with "untranscribed" keyword.
+    cov_warns = [w for w in result["warnings"] if "untranscribed" in w.lower()]
+    assert cov_warns, f"expected coverage warning, got: {result['warnings']}"
+    assert "coverage" in result
+    assert result["coverage"]["gap_count"] >= 1
