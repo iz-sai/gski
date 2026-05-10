@@ -334,6 +334,10 @@ def transcribe_long(
     output_dir,
     chunk_len_sec: int = 900,
     overlap_sec: int = 30,
+    salvage: bool = False,
+    salvage_model: str = "gemini-3-pro-preview",
+    salvage_subchunk_sec: int = 180,
+    salvage_max_depth: int = 2,
 ):
     tmp_dir = Path(tmp_dir)
     tmp_dir.mkdir(parents=True, exist_ok=True)
@@ -404,6 +408,104 @@ def transcribe_long(
             # Only carry over real segments for context, skip system markers.
             real = [s for s in segments if s.get("s") != "__system__"]
             prev_tail = real[-TAIL_SEGMENTS_FOR_CONTEXT:] if real else prev_tail
+
+    if salvage:
+        for i, record in enumerate(chunks_meta):
+            if not _chunk_is_unhealthy(record):
+                continue
+            chunk, _orig_segments = chunk_results[i]
+            ladder_results: dict = {}
+
+            # Step 1: pro fallback on the full chunk.
+            if salvage_max_depth >= 1:
+                if len(chunks) == 1:
+                    sc_path = str(audio_path)
+                else:
+                    sc_path = str(tmp_dir / f"chunk_{chunk.index:03d}.ogg")
+                pro_segs, pro_attempts = salvage_chunk_with_pro(
+                    client, chunk,
+                    model=salvage_model,
+                    audio_path=audio_path,
+                    tmp_dir=tmp_dir,
+                    chunk_path=sc_path,
+                    total_chunks=len(chunks),
+                    prev_tail=None,
+                    diarize=diarize, timestamps=timestamps,
+                )
+                pro_ok = any(a.get("ok") for a in pro_attempts)
+                ladder_results["pro"] = {
+                    "ok": pro_ok,
+                    "segment_count": len(pro_segs),
+                    "attempts": pro_attempts,
+                }
+                if pro_ok:
+                    chunk_results[i] = (chunk, pro_segs)
+                    record["salvage"] = ladder_results
+                    warnings.append(
+                        f"chunk {chunk.index} salvaged via pro-fallback "
+                        f"({len(pro_segs)} segments)"
+                    )
+                    continue
+
+            # Step 2: sub-chunk with flash.
+            if salvage_max_depth >= 2:
+                sub_segs, sub_attempts = salvage_chunk_with_subchunks(
+                    client, chunk,
+                    audio_path=audio_path,
+                    model=model,  # flash
+                    diarize=diarize, timestamps=timestamps,
+                    tmp_dir=tmp_dir,
+                    subchunk_sec=salvage_subchunk_sec,
+                )
+                ladder_results["subchunk_flash"] = {
+                    "segment_count": len(sub_segs),
+                    "sub_attempts": sub_attempts,
+                }
+                if sub_segs:
+                    chunk_results[i] = (chunk, sub_segs)
+                    record["salvage"] = ladder_results
+                    warnings.append(
+                        f"chunk {chunk.index} salvaged via flash sub-chunking "
+                        f"({len(sub_segs)} segments)"
+                    )
+                    continue
+
+            # Step 3: sub-chunk with pro.
+            if salvage_max_depth >= 3:
+                sub_segs, sub_attempts = salvage_chunk_with_subchunks(
+                    client, chunk,
+                    audio_path=audio_path,
+                    model=salvage_model,
+                    diarize=diarize, timestamps=timestamps,
+                    tmp_dir=tmp_dir,
+                    subchunk_sec=salvage_subchunk_sec,
+                )
+                ladder_results["subchunk_pro"] = {
+                    "segment_count": len(sub_segs),
+                    "sub_attempts": sub_attempts,
+                }
+                if sub_segs:
+                    chunk_results[i] = (chunk, sub_segs)
+                    record["salvage"] = ladder_results
+                    warnings.append(
+                        f"chunk {chunk.index} salvaged via pro sub-chunking "
+                        f"({len(sub_segs)} segments)"
+                    )
+                    continue
+
+            # All salvage steps exhausted — leave chunk as-is.
+            record["salvage"] = ladder_results
+            warnings.append(
+                f"chunk {chunk.index} salvage FAILED "
+                f"(depth={salvage_max_depth}); leaving as-is"
+            )
+
+        # Re-write updated meta files after salvage.
+        for record in chunks_meta:
+            idx = record["chunk"]["index"]
+            (run_dir / f"chunk_{idx:03d}.meta.json").write_text(
+                json.dumps(record, indent=2, ensure_ascii=False, default=str)
+            )
 
     merged = merge_chunks(chunk_results)
 

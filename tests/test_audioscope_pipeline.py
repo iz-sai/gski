@@ -653,3 +653,165 @@ def test_salvage_chunk_with_subchunks_skips_empty_sub_results(tmp_path):
 
     assert len(segments) == 1
     assert segments[0]["x"] == "hi"
+
+
+def test_transcribe_long_salvage_recovers_failed_chunk_with_pro(tmp_path):
+    """First flash pass: chunk 0 fails (looped). Pro salvage: chunk 0 succeeds.
+    Final merged has no gap placeholders."""
+    from gski.audioscope_pipeline import transcribe_long
+
+    audio = tmp_path / "a.ogg"
+    audio.write_bytes(b"fake")
+
+    client = MagicMock()
+    call_log = []
+    # Dense 15 minute-segments so validators pass.
+    _dense_flash_c1 = "[" + ",".join(
+        f'{{"s":"Speaker 1","t":"{m:02d}:00","x":"chunk1 min {m}"}}'
+        for m in range(15)
+    ) + "]"
+    _dense_pro_c0 = "[" + ",".join(
+        f'{{"s":"Speaker 1","t":"{m:02d}:00","x":"pro chunk0 min {m}"}}'
+        for m in range(15)
+    ) + "]"
+    # A loopy response that fails the loop validator: 5-gram repeated > max_repeats.
+    _loopy = (
+        '[{"s":"Speaker 1","t":"00:00","x":"'
+        + "loop loop loop loop loop " * 10
+        + '"}]'
+    )
+
+    def gen(model, contents, config):
+        call_log.append(model)
+        r = MagicMock()
+        r.candidates = [MagicMock(finish_reason="STOP")]
+        r.usage_metadata = MagicMock(prompt_token_count=100, candidates_token_count=50)
+        if model == "gemini-3-pro-preview":
+            # Pro salvage for chunk 0 → succeed.
+            r.text = _dense_pro_c0
+        else:
+            # Flash calls: first is chunk 0 (loopy), rest are chunk 1+ retries
+            # (each chunk early-returns after salvage cuts the loop into
+            # a placeholder that passes loop-check, so only 1 flash call per
+            # failing chunk actually happens).
+            flash_count = sum(1 for m in call_log if m == "gemini-3-flash-preview")
+            if flash_count == 1:
+                r.text = _loopy  # chunk 0
+            else:
+                r.text = _dense_flash_c1  # chunk 1
+        return r
+    client.models.generate_content.side_effect = gen
+    client.files.upload.return_value = MagicMock()
+
+    with patch("gski.audioscope_pipeline.probe_duration", return_value=1770), \
+         patch("gski.audioscope_pipeline.extract_chunk"), \
+         patch("gski.audioscope_pipeline.extract_chunk_with_offset"):
+        result = transcribe_long(
+            client, audio_path=str(audio), model="gemini-3-flash-preview",
+            diarize=True, timestamps=True,
+            tmp_dir=tmp_path, output_dir=tmp_path / "out",
+            salvage=True,
+            salvage_model="gemini-3-pro-preview",
+            salvage_max_depth=1,  # just pro fallback, no sub-chunking
+        )
+
+    # Pro recovered chunk 0 → segments contain "pro chunk0" prefix.
+    texts = [s.get("x", "") for s in result["segments"]]
+    assert any("pro chunk0" in t for t in texts), \
+        f"expected pro-salvaged chunk 0 segments, got: {texts[:5]}"
+    # No gap placeholders.
+    assert result["coverage"]["total_untranscribed_sec"] == 0
+    # chunks_meta[0] has salvage info.
+    assert "salvage" in result["chunks_meta"][0]
+    assert result["chunks_meta"][0]["salvage"]["pro"]["ok"] is True
+
+
+def test_transcribe_long_salvage_falls_back_to_subchunk(tmp_path):
+    """Pro also fails → subchunk pass recovers."""
+    from gski.audioscope_pipeline import transcribe_long
+
+    audio = tmp_path / "a.ogg"
+    audio.write_bytes(b"fake")
+
+    _loopy = (
+        '[{"s":"Speaker 1","t":"00:00","x":"'
+        + "loop loop loop loop loop " * 10
+        + '"}]'
+    )
+
+    client = MagicMock()
+    def gen(model, contents, config):
+        r = MagicMock()
+        r.candidates = [MagicMock(finish_reason="STOP")]
+        r.usage_metadata = MagicMock(prompt_token_count=100, candidates_token_count=50)
+        # Call 1: flash chunk 0 → loop (salvage cuts it, returns placeholder,
+        #   early exit from retry loop → only 1 flash call).
+        # Call 2: pro salvage chunk 0 → loop (same early exit → 1 pro call,
+        #   attempts[-1]["ok"] is False → salvage considers pro failed).
+        # Calls 3+: sub-chunks on flash → short seg per sub (best-effort).
+        count = client.models.generate_content.call_count
+        if count <= 2:
+            r.text = _loopy
+        else:
+            r.text = f'[{{"s":"Speaker 1","t":"00:05","x":"subchunk seg {count}"}}]'
+        return r
+    client.models.generate_content.side_effect = gen
+    client.files.upload.return_value = MagicMock()
+
+    with patch("gski.audioscope_pipeline.probe_duration", return_value=900), \
+         patch("gski.audioscope_pipeline.extract_chunk"), \
+         patch("gski.audioscope_pipeline.extract_chunk_with_offset"):
+        result = transcribe_long(
+            client, audio_path=str(audio), model="gemini-3-flash-preview",
+            diarize=True, timestamps=True,
+            tmp_dir=tmp_path, output_dir=tmp_path / "out",
+            salvage=True,
+            salvage_model="gemini-3-pro-preview",
+            salvage_subchunk_sec=300,
+            salvage_max_depth=2,
+        )
+
+    texts = [s.get("x", "") for s in result["segments"]]
+    assert any("subchunk seg" in t for t in texts)
+    assert result["chunks_meta"][0]["salvage"]["subchunk_flash"]["segment_count"] >= 1
+
+
+def test_transcribe_long_salvage_disabled_by_default(tmp_path):
+    """Without --salvage, unhealthy chunks stay unhealthy."""
+    from gski.audioscope_pipeline import transcribe_long
+
+    audio = tmp_path / "a.ogg"
+    audio.write_bytes(b"fake")
+
+    _loopy = (
+        '[{"s":"Speaker 1","t":"00:00","x":"'
+        + "loop loop loop loop loop " * 10
+        + '"}]'
+    )
+
+    client = MagicMock()
+    response = MagicMock()
+    response.text = _loopy
+    response.candidates = [MagicMock(finish_reason="STOP")]
+    response.usage_metadata = MagicMock(prompt_token_count=100, candidates_token_count=50)
+    client.models.generate_content.return_value = response
+    client.files.upload.return_value = MagicMock()
+
+    with patch("gski.audioscope_pipeline.probe_duration", return_value=900), \
+         patch("gski.audioscope_pipeline.extract_chunk"), \
+         patch("gski.audioscope_pipeline.extract_chunk_with_offset"):
+        result = transcribe_long(
+            client, audio_path=str(audio), model="gemini-3-flash-preview",
+            diarize=True, timestamps=True,
+            tmp_dir=tmp_path, output_dir=tmp_path / "out",
+            # salvage=False by default
+        )
+
+    # No pro calls were made.
+    models_called = [
+        c.kwargs.get("model") or (c.args[0] if c.args else None)
+        for c in client.models.generate_content.call_args_list
+    ]
+    assert "gemini-3-pro-preview" not in models_called
+    # chunks_meta has no salvage key (or has salvage={"enabled": False}).
+    assert not result["chunks_meta"][0].get("salvage", {}).get("pro")
