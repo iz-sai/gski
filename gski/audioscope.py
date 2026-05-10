@@ -227,6 +227,29 @@ def register(subparsers):
         action="store_true",
         help="force single-shot even on long audio (debug)",
     )
+    p.add_argument(
+        "--salvage",
+        action="store_true",
+        help="enable salvage pass for failed chunks (pro fallback + sub-chunking)",
+    )
+    p.add_argument(
+        "--salvage-model",
+        default="pro",
+        choices=list(MODELS),
+        help="model for salvage pro-fallback (default: pro)",
+    )
+    p.add_argument(
+        "--salvage-subchunk-sec",
+        type=int,
+        default=180,
+        help="sub-chunk length in seconds for salvage (default: 180)",
+    )
+    p.add_argument(
+        "--salvage-max-depth",
+        type=int,
+        default=2,
+        help="salvage ladder depth: 1=pro only, 2=+flash subchunk, 3=+pro subchunk (default: 2)",
+    )
     p.set_defaults(func=run)
 
 
@@ -288,6 +311,10 @@ def run(args):
                     overlap_sec=args.overlap_sec,
                     tmp_dir=tmp_dir,
                     output_dir=output_dir,
+                    salvage=args.salvage,
+                    salvage_model=MODELS[args.salvage_model],
+                    salvage_subchunk_sec=args.salvage_subchunk_sec,
+                    salvage_max_depth=args.salvage_max_depth,
                 )
             print(format_diarize(result["segments"]))
             for w in result["warnings"]:

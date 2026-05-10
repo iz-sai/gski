@@ -26,6 +26,8 @@ def test_cli_short_diarize_writes_flat_json_and_raw(tmp_path, monkeypatch):
         prompt=None, audio=[str(audio)], youtube=[], model="flash",
         diarize=True, timestamps=True, output_dir=str(out_dir),
         chunk_len_sec=900, overlap_sec=30, no_chunking=False,
+        salvage=False, salvage_model="pro",
+        salvage_subchunk_sec=180, salvage_max_depth=2,
     )
 
     with patch("gski.audioscope.genai.Client", return_value=client), \
@@ -61,6 +63,8 @@ def test_cli_no_chunking_flag_forces_short_path(tmp_path, monkeypatch):
         prompt=None, audio=[str(audio)], youtube=[], model="flash",
         diarize=True, timestamps=True, output_dir=str(out_dir),
         chunk_len_sec=900, overlap_sec=30, no_chunking=True,
+        salvage=False, salvage_model="pro",
+        salvage_subchunk_sec=180, salvage_max_depth=2,
     )
 
     with patch("gski.audioscope.genai.Client", return_value=client), \
