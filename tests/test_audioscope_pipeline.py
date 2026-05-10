@@ -449,3 +449,33 @@ def test_transcribe_long_emits_coverage_warning_when_gaps_present(tmp_path):
     assert cov_warns, f"expected coverage warning, got: {result['warnings']}"
     assert "coverage" in result
     assert result["coverage"]["gap_count"] >= 1
+
+
+def test_chunk_is_unhealthy_all_attempts_failed():
+    from gski.audioscope_pipeline import _chunk_is_unhealthy
+    record = {
+        "chunk": {"index": 0, "start": 0, "end": 900},
+        "attempts": [
+            {"attempt": 0, "ok": False, "failed_check": "loop"},
+            {"attempt": 1, "ok": False, "failed_check": "loop"},
+            {"attempt": 2, "ok": False, "failed_check": "loop"},
+        ],
+    }
+    assert _chunk_is_unhealthy(record) is True
+
+
+def test_chunk_is_unhealthy_last_attempt_ok():
+    from gski.audioscope_pipeline import _chunk_is_unhealthy
+    record = {
+        "chunk": {"index": 0, "start": 0, "end": 900},
+        "attempts": [
+            {"attempt": 0, "ok": False, "failed_check": "loop"},
+            {"attempt": 1, "ok": True, "failed_check": None},
+        ],
+    }
+    assert _chunk_is_unhealthy(record) is False
+
+
+def test_chunk_is_unhealthy_no_attempts():
+    from gski.audioscope_pipeline import _chunk_is_unhealthy
+    assert _chunk_is_unhealthy({"chunk": {"index": 0}, "attempts": []}) is True

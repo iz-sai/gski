@@ -57,6 +57,16 @@ RETRY_CONFIGS = RETRY_STRATEGIES
 TAIL_SEGMENTS_FOR_CONTEXT = 5
 
 
+def _chunk_is_unhealthy(record: dict) -> bool:
+    """A chunk is unhealthy if its final retry attempt failed validation
+    (accepted with failures) or no attempts succeeded at all. Used to
+    drive the salvage pass."""
+    attempts = record.get("attempts", [])
+    if not attempts:
+        return True
+    return not any(a.get("ok") for a in attempts)
+
+
 def _validate_chunk(segments, chunk_duration_sec):
     for name, result in [
         ("duration", check_duration(segments, chunk_duration_sec)),
