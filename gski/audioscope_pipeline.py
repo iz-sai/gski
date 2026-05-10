@@ -222,6 +222,36 @@ def _transcribe_single_chunk_with_retries(
     return best_segments, attempts
 
 
+def salvage_chunk_with_pro(
+    client,
+    chunk,
+    *,
+    model: str,
+    audio_path: str,
+    tmp_dir,
+    chunk_path: str,
+    total_chunks: int,
+    prev_tail,
+    diarize: bool,
+    timestamps: bool,
+):
+    """Retry a single failing chunk on the salvage model (typically pro).
+    Reuses the full diverse-retry ladder. Returns (segments, attempts).
+    Segments may be empty if even pro fails."""
+    return _transcribe_single_chunk_with_retries(
+        client,
+        model=model,
+        audio_path=audio_path,
+        tmp_dir=Path(tmp_dir),
+        chunk_path=chunk_path,
+        chunk=chunk,
+        total_chunks=total_chunks,
+        prev_tail=prev_tail,
+        diarize=diarize,
+        timestamps=timestamps,
+    )
+
+
 def transcribe_long(
     client,
     *,

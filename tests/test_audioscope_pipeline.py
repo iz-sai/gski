@@ -479,3 +479,88 @@ def test_chunk_is_unhealthy_last_attempt_ok():
 def test_chunk_is_unhealthy_no_attempts():
     from gski.audioscope_pipeline import _chunk_is_unhealthy
     assert _chunk_is_unhealthy({"chunk": {"index": 0}, "attempts": []}) is True
+
+
+def test_salvage_chunk_with_pro_succeeds(tmp_path):
+    from gski.audioscope_pipeline import salvage_chunk_with_pro
+    from gski.audioscope_utils import ChunkSpec
+
+    audio = tmp_path / "audio.ogg"
+    audio.write_bytes(b"fake")
+    chunk_path = tmp_path / "chunk_000.ogg"
+    chunk_path.write_bytes(b"fake")
+    chunk = ChunkSpec(index=0, start=0, end=900)
+
+    client = MagicMock()
+    response = MagicMock()
+    response.text = (
+        "["
+        + ",".join(
+            f'{{"s":"Speaker 1","t":"{m:02d}:00","x":"pro min {m}"}}'
+            for m in range(15)
+        )
+        + "]"
+    )
+    response.candidates = [MagicMock(finish_reason="STOP")]
+    response.usage_metadata = MagicMock(prompt_token_count=100, candidates_token_count=50)
+    client.models.generate_content.return_value = response
+    client.files.upload.return_value = MagicMock()
+
+    with patch("gski.audioscope_pipeline.extract_chunk_with_offset"):
+        segments, attempts = salvage_chunk_with_pro(
+            client, chunk,
+            model="gemini-3-pro-preview",
+            audio_path=str(audio),
+            tmp_dir=tmp_path,
+            chunk_path=str(chunk_path),
+            total_chunks=1,
+            prev_tail=None,
+            diarize=True, timestamps=True,
+        )
+    assert len(segments) == 15
+    assert segments[0]["x"] == "pro min 0"
+    assert any(a.get("ok") for a in attempts)
+    # First call should have used the pro model
+    call_kwargs = client.models.generate_content.call_args_list[0].kwargs
+    call_args = client.models.generate_content.call_args_list[0].args
+    assert call_kwargs.get("model") == "gemini-3-pro-preview" or (
+        call_args and call_args[0] == "gemini-3-pro-preview"
+    )
+
+
+def test_salvage_chunk_with_pro_still_fails_returns_best_effort(tmp_path):
+    from gski.audioscope_pipeline import salvage_chunk_with_pro
+    from gski.audioscope_utils import ChunkSpec
+
+    audio = tmp_path / "audio.ogg"
+    audio.write_bytes(b"fake")
+    chunk_path = tmp_path / "chunk_000.ogg"
+    chunk_path.write_bytes(b"fake")
+    chunk = ChunkSpec(index=0, start=0, end=900)
+
+    client = MagicMock()
+    # Pro also produces looped output → validation fails on all retries.
+    response = MagicMock()
+    response.text = (
+        '[{"s":"Speaker 1","t":"00:00","x":"loop loop loop loop loop loop '
+        'loop loop loop loop loop loop loop loop loop loop loop loop loop loop"}]'
+    )
+    response.candidates = [MagicMock(finish_reason="STOP")]
+    response.usage_metadata = MagicMock(prompt_token_count=100, candidates_token_count=50)
+    client.models.generate_content.return_value = response
+    client.files.upload.return_value = MagicMock()
+
+    with patch("gski.audioscope_pipeline.extract_chunk_with_offset"):
+        segments, attempts = salvage_chunk_with_pro(
+            client, chunk,
+            model="gemini-3-pro-preview",
+            audio_path=str(audio),
+            tmp_dir=tmp_path,
+            chunk_path=str(chunk_path),
+            total_chunks=1,
+            prev_tail=None,
+            diarize=True, timestamps=True,
+        )
+    assert not any(a.get("ok") for a in attempts)
+    # Segments returned (best-effort) even if validation failed.
+    assert isinstance(segments, list)
