@@ -564,3 +564,92 @@ def test_salvage_chunk_with_pro_still_fails_returns_best_effort(tmp_path):
     assert not any(a.get("ok") for a in attempts)
     # Segments returned (best-effort) even if validation failed.
     assert isinstance(segments, list)
+
+
+def test_salvage_chunk_with_subchunks_stitches_timestamps(tmp_path):
+    from gski.audioscope_pipeline import salvage_chunk_with_subchunks
+    from gski.audioscope_utils import ChunkSpec
+
+    audio = tmp_path / "audio.ogg"
+    audio.write_bytes(b"fake")
+    # Parent chunk: 1800..2700s of the original audio (900s duration).
+    chunk = ChunkSpec(index=2, start=1800, end=2700)
+
+    client = MagicMock()
+    # Each sub-chunk returns 1 segment at its local time 00:10.
+    # _transcribe_single_chunk_with_retries will run 3 retry attempts per
+    # sub-chunk (duration validator fails on a single 00:10 seg for 300s sub);
+    # best_segments from attempt 0 gets returned as best-effort.
+    call_idx = {"n": 0}
+    def gen(model, contents, config):
+        r = MagicMock()
+        r.text = '[{"s":"Speaker 1","t":"00:10","x":"sub ' + str(call_idx["n"]) + '"}]'
+        r.candidates = [MagicMock(finish_reason="STOP")]
+        r.usage_metadata = MagicMock(prompt_token_count=50, candidates_token_count=10)
+        call_idx["n"] += 1
+        return r
+    client.models.generate_content.side_effect = gen
+    client.files.upload.return_value = MagicMock()
+
+    with patch("gski.audioscope_pipeline.extract_chunk"), \
+         patch("gski.audioscope_pipeline.extract_chunk_with_offset"):
+        segments, attempts = salvage_chunk_with_subchunks(
+            client, chunk,
+            audio_path=str(audio),
+            model="gemini-3-flash-preview",
+            diarize=True, timestamps=True,
+            tmp_dir=tmp_path,
+            subchunk_sec=300,
+        )
+
+    # 900s / 300s = 3 sub-chunks
+    assert len(attempts) == 3
+    # Each sub-chunk returned 1 best-effort segment. Total 3 segments.
+    assert len(segments) == 3
+    # Timestamps are relative to chunk.start=1800 (parent chunk local).
+    # sub 0 local 10s → chunk-relative 10s
+    # sub 1 local 10s → chunk-relative 300+10=310s
+    # sub 2 local 10s → chunk-relative 600+10=610s
+    from gski.audioscope_utils import parse_ts
+    ts_sec = [parse_ts(s["t"]) for s in segments]
+    assert ts_sec == [10, 310, 610]
+
+
+def test_salvage_chunk_with_subchunks_skips_empty_sub_results(tmp_path):
+    from gski.audioscope_pipeline import salvage_chunk_with_subchunks
+    from gski.audioscope_utils import ChunkSpec
+
+    audio = tmp_path / "audio.ogg"
+    audio.write_bytes(b"fake")
+    chunk = ChunkSpec(index=0, start=0, end=600)
+
+    # Sub 0: first call returns valid seg (best-effort kept after retries).
+    # Sub 1: all calls return empty list → no segments recovered.
+    client = MagicMock()
+    call_idx = {"n": 0}
+    def gen(model, contents, config):
+        r = MagicMock()
+        r.candidates = [MagicMock(finish_reason="STOP")]
+        r.usage_metadata = MagicMock(prompt_token_count=50, candidates_token_count=10)
+        if call_idx["n"] == 0:
+            r.text = '[{"s":"A","t":"00:05","x":"hi"}]'
+        else:
+            r.text = '[]'
+        call_idx["n"] += 1
+        return r
+    client.models.generate_content.side_effect = gen
+    client.files.upload.return_value = MagicMock()
+
+    with patch("gski.audioscope_pipeline.extract_chunk"), \
+         patch("gski.audioscope_pipeline.extract_chunk_with_offset"):
+        segments, attempts = salvage_chunk_with_subchunks(
+            client, chunk,
+            audio_path=str(audio),
+            model="gemini-3-flash-preview",
+            diarize=True, timestamps=True,
+            tmp_dir=tmp_path,
+            subchunk_sec=300,
+        )
+
+    assert len(segments) == 1
+    assert segments[0]["x"] == "hi"

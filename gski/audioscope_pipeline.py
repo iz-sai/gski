@@ -252,6 +252,77 @@ def salvage_chunk_with_pro(
     )
 
 
+def salvage_chunk_with_subchunks(
+    client,
+    chunk,
+    *,
+    audio_path: str,
+    model: str,
+    diarize: bool,
+    timestamps: bool,
+    tmp_dir,
+    subchunk_sec: int = 180,
+):
+    """Split a failed chunk into fixed-length sub-chunks (no overlap),
+    transcribe each on the given model, stitch results into the parent
+    chunk's local time frame (relative to chunk.start).
+    Returns (segments_shifted, attempts_summary_list)."""
+    from gski.audioscope_utils import ChunkSpec, parse_ts, format_ts
+
+    tmp_dir = Path(tmp_dir)
+    all_segments: list[dict] = []
+    all_attempts: list[dict] = []
+
+    offset_in_parent = 0
+    sub_idx = 0
+    while offset_in_parent < chunk.duration:
+        sub_len = min(subchunk_sec, chunk.duration - offset_in_parent)
+        sub_start = chunk.start + offset_in_parent
+        sub_end = sub_start + sub_len
+        sub_path = tmp_dir / f"subchunk_{chunk.index:03d}_{sub_idx:03d}.ogg"
+        # Extract from the original audio file.
+        extract_chunk(audio_path, str(sub_path), sub_start, sub_end)
+        # Distinct index space for sub-chunks so debug artefacts don't collide.
+        sub_spec = ChunkSpec(
+            index=1000 * (chunk.index + 1) + sub_idx,
+            start=sub_start,
+            end=sub_end,
+        )
+        sub_segments, sub_attempts = _transcribe_single_chunk_with_retries(
+            client,
+            model=model,
+            audio_path=audio_path,
+            tmp_dir=tmp_dir,
+            chunk_path=str(sub_path),
+            chunk=sub_spec,
+            total_chunks=1,
+            prev_tail=None,
+            diarize=diarize,
+            timestamps=timestamps,
+        )
+        all_attempts.append({
+            "sub_index": sub_idx,
+            "offset_in_parent": offset_in_parent,
+            "sub_len": sub_len,
+            "attempts": sub_attempts,
+            "segment_count": len(sub_segments),
+        })
+        # Shift timestamps from sub-local to parent-local.
+        for seg in sub_segments:
+            new = dict(seg)
+            t = seg.get("t")
+            if t:
+                try:
+                    new["t"] = format_ts(parse_ts(t) + offset_in_parent)
+                except ValueError:
+                    pass
+            all_segments.append(new)
+        offset_in_parent += sub_len
+        sub_idx += 1
+
+    return all_segments, all_attempts
+
+
 def transcribe_long(
     client,
     *,
