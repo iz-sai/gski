@@ -1,4 +1,5 @@
 import json
+import sys
 from datetime import datetime
 from pathlib import Path
 
@@ -173,6 +174,18 @@ def _transcribe_single_chunk_with_retries(
                     "ok": False,
                     "error": str(e),
                     "meta": e.meta,
+                    "strategy": strategy,
+                }
+            )
+            continue
+        except Exception as e:
+            print(f"warning: chunk {chunk.index} attempt {attempt_idx} "
+                  f"hit unexpected error: {type(e).__name__}: {e}", file=sys.stderr)
+            attempts.append(
+                {
+                    "attempt": attempt_idx,
+                    "ok": False,
+                    "error": f"{type(e).__name__}: {e}",
                     "strategy": strategy,
                 }
             )
