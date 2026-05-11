@@ -369,7 +369,16 @@ def transcribe_long(
     chunk_results: list = []
     prev_tail = None
 
+    dur_m, dur_s = divmod(int(duration), 60)
+    dur_h, dur_m = divmod(dur_m, 60)
+    dur_str = f"{dur_h}h {dur_m:02d}m" if dur_h else f"{dur_m}m {dur_s:02d}s"
+    print(f"progress: {len(chunks)} chunks, {dur_str} total audio", file=sys.stderr, flush=True)
+
     for chunk in chunks:
+        ok_mark = ""
+        print(f"progress: chunk {chunk.index + 1}/{len(chunks)} "
+              f"({format_ts(chunk.start)}–{format_ts(chunk.end)})",
+              file=sys.stderr, flush=True)
         if len(chunks) == 1:
             chunk_path = str(audio_path)
         else:
@@ -406,6 +415,8 @@ def transcribe_long(
             warnings.append(
                 f"chunk {chunk.index} ({chunk.start}..{chunk.end}s) produced no valid segments; inserted lost-chunk placeholder"
             )
+            print(f"progress: chunk {chunk.index + 1}/{len(chunks)} FAILED — no valid segments",
+                  file=sys.stderr, flush=True)
             segments = [
                 {
                     "s": "__system__",
@@ -417,6 +428,12 @@ def transcribe_long(
             warnings.append(
                 f"chunk {chunk.index} ({chunk.start}..{chunk.end}s) accepted with validation failures"
             )
+            print(f"progress: chunk {chunk.index + 1}/{len(chunks)} done (with validation issues, {len(attempts)} attempts)",
+                  file=sys.stderr, flush=True)
+        else:
+            ok_attempts = len(attempts)
+            print(f"progress: chunk {chunk.index + 1}/{len(chunks)} done ({ok_attempts} attempt{'s' if ok_attempts > 1 else ''})",
+                  file=sys.stderr, flush=True)
         chunk_results.append((chunk, segments))
         if segments:
             # Only carry over real segments for context, skip system markers.
@@ -424,10 +441,17 @@ def transcribe_long(
             prev_tail = real[-TAIL_SEGMENTS_FOR_CONTEXT:] if real else prev_tail
 
     if salvage:
+        unhealthy = [i for i, r in enumerate(chunks_meta) if _chunk_is_unhealthy(r)]
+        if unhealthy:
+            print(f"progress: salvage pass — {len(unhealthy)} unhealthy chunk(s)",
+                  file=sys.stderr, flush=True)
         for i, record in enumerate(chunks_meta):
             if not _chunk_is_unhealthy(record):
                 continue
             chunk, _orig_segments = chunk_results[i]
+            print(f"progress: salvaging chunk {chunk.index + 1}/{len(chunks)} "
+                  f"({format_ts(chunk.start)}–{format_ts(chunk.end)})",
+                  file=sys.stderr, flush=True)
             ladder_results: dict = {}
 
             # Step 1: pro fallback on the full chunk.
