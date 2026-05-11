@@ -89,6 +89,34 @@ retries. Downstream formatters can filter these out or render them
 distinctly; they are semantically "transcript coverage metadata", not
 real speech.
 
+## Salvage mode
+
+Opt-in, for when you cannot tolerate untranscribed segments. Adds
+significant API cost (pro model is ~10x flash).
+
+```
+--salvage                     enable salvage ladder (default: off)
+--salvage-model pro           model for pro fallback (default: pro)
+--salvage-subchunk-sec 180    sub-chunk length in seconds (default: 180)
+--salvage-max-depth 2         ladder depth 1-3 (default: 2)
+```
+
+When enabled, after the initial chunking pass, any chunk whose final
+retry attempt failed validation (or produced a lost-chunk placeholder)
+is retried on the salvage model (default: pro). If pro also fails, the
+chunk is split into `salvage-subchunk-sec`-long slices and each is
+transcribed separately on flash. Depth 3 adds a pro pass over the
+sub-chunks as a final backstop.
+
+Per-chunk salvage metadata is recorded in `chunk_NNN.meta.json` under
+a new `salvage` key (`pro`, `subchunk_flash`, `subchunk_pro` sub-keys
+with `ok` / `segment_count` / `attempts`). Stderr prints one line per
+recovered chunk: `chunk N salvaged via pro-fallback (M segments)`.
+
+Empirically on 2h Russian meeting audio, depth=2 closes 100% of gaps
+from flash-only validation failures: pro recovers ~2 out of 3 failing
+chunks; the remaining one is recovered by flash sub-chunking.
+
 ## Supported formats
 
 WAV, MP3, AIFF, AAC, OGG, FLAC
