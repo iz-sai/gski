@@ -31,7 +31,13 @@ FLAT_DIARIZE_SCHEMA = types.Schema(
 )
 
 
-def _thinking_config_kwargs():
+def _thinking_config_kwargs(model: str | None = None):
+    # Pro models require thinking mode (budget > 0 or dynamic); passing
+    # budget=0 yields "400 Budget 0 is invalid. This model only works in
+    # thinking mode." Omit the thinking config entirely for pro so the
+    # server uses its default.
+    if model and "pro" in model:
+        return {}
     if not hasattr(types, "ThinkingConfig"):
         return {}
     try:
@@ -46,6 +52,7 @@ def build_diarize_config(
     seed: int = 42,
     temperature: float = 0.0,
     max_output_tokens: int = 32000,
+    model: str | None = None,
 ):
     schema = FLAT_DIARIZE_TS_SCHEMA if timestamps else FLAT_DIARIZE_SCHEMA
     return types.GenerateContentConfig(
@@ -57,7 +64,7 @@ def build_diarize_config(
         candidate_count=1,
         seed=seed,
         max_output_tokens=max_output_tokens,
-        **_thinking_config_kwargs(),
+        **_thinking_config_kwargs(model),
     )
 
 

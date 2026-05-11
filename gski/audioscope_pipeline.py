@@ -154,6 +154,7 @@ def _transcribe_single_chunk_with_retries(
                 timestamps=timestamps,
                 seed=strategy["seed"],
                 temperature=strategy["temperature"],
+                model=model,
             )
 
         try:

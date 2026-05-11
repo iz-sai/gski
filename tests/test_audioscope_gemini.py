@@ -23,6 +23,20 @@ def test_build_diarize_config_has_flat_schema_and_hardened_params():
     assert cfg.seed == 42
 
 
+def test_build_diarize_config_flash_sets_thinking_budget_zero():
+    cfg = build_diarize_config(timestamps=True, model="gemini-3-flash-preview")
+    # Flash runs in non-thinking mode for speed.
+    assert cfg.thinking_config is not None
+    assert cfg.thinking_config.thinking_budget == 0
+
+
+def test_build_diarize_config_pro_omits_thinking_config():
+    # Pro rejects budget=0 with "This model only works in thinking mode".
+    # We must omit thinking_config for pro so the server picks its default.
+    cfg = build_diarize_config(timestamps=True, model="gemini-3-pro-preview")
+    assert cfg.thinking_config is None
+
+
 def test_build_prompt_includes_duration_hint():
     p = build_prompt_for_chunk(
         chunk_index=2, total_chunks=5,

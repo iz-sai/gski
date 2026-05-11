@@ -336,7 +336,7 @@ def run(args):
     # Short-audio / non-diarize path: single-shot with hardened config for diarize.
     if args.diarize:
         from gski.audioscope_gemini import build_diarize_config
-        config = build_diarize_config(timestamps=args.timestamps)
+        config = build_diarize_config(timestamps=args.timestamps, model=model)
     else:
         config = None
 
