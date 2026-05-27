@@ -349,7 +349,7 @@ def transcribe_long(
     chunk_len_sec: int = 900,
     overlap_sec: int = 30,
     salvage: bool = False,
-    salvage_model: str = "gemini-3-pro-preview",
+    salvage_model: str = "gemini-3.1-pro-preview",
     salvage_subchunk_sec: int = 180,
     salvage_max_depth: int = 2,
 ):

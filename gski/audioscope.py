@@ -9,8 +9,8 @@ from google.genai import types
 
 
 MODELS = {
-    "flash": "gemini-3-flash-preview",
-    "pro": "gemini-3-pro-preview",
+    "flash": "gemini-3.5-flash",
+    "pro": "gemini-3.1-pro-preview",
 }
 
 PROMPT_TRANSCRIBE = "Generate a transcript of the speech."

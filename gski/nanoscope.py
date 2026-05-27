@@ -14,8 +14,8 @@ from PIL import Image, ImageDraw
 
 
 MODELS = {
-    "flash": "gemini-3-flash-preview",
-    "pro": "gemini-3-pro-preview",
+    "flash": "gemini-3.5-flash",
+    "pro": "gemini-3.1-pro-preview",
 }
 
 DETECT_SUFFIX = " The box_2d should be [ymin, xmin, ymax, xmax] normalized to 0-1000."

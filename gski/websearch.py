@@ -7,7 +7,7 @@ from google.genai import types
 
 
 MODELS = {
-    "flash": "gemini-3-flash-preview",
+    "flash": "gemini-3.5-flash",
     "flash-lite": "gemini-3.1-flash-lite-preview",
 }
 
