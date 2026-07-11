@@ -142,10 +142,46 @@ def _save_archive(path, vid_id):
         f.write(f"{vid_id}\n")
 
 
+def _download_media(url, args):
+    outdir = Path(args.output_dir or ".")
+    outdir.mkdir(parents=True, exist_ok=True)
+    tmpl = str(outdir / "%(title).180B [%(id)s].%(ext)s")
+
+    cmd = ["yt-dlp", "--no-playlist", "-o", tmpl]
+
+    if args.audio:
+        cmd += [
+            "-x",
+            "--audio-format",
+            "mp3",
+            "--audio-quality",
+            str(args.audio_quality),
+            "-f",
+            "bestaudio/best",
+        ]
+    elif args.video:
+        res = args.res
+        cmd += [
+            "-f",
+            f"bv*[height<={res}]+ba/b[height<={res}]/worst",
+        ]
+
+    cmd += ["--print", "after_move:filepath", "--no-simulate", url]
+
+    print(f"downloading {'audio' if args.audio else 'video'}: {url}", file=sys.stderr)
+    out, rc = _run_ytdlp(cmd, quiet=True)
+    if rc == 0 and out:
+        print(f"saved: {out}", file=sys.stderr)
+    return rc == 0
+
+
 def _process_video(url, args, archive=None):
     if archive and url in archive:
         print(f"skip: {url} (archived)", file=sys.stderr)
         return None
+
+    if args.audio or args.video:
+        _download_media(url, args)
 
     cmd = ["yt-dlp", "--dump-json", "--skip-download"]
     if args.comments:
@@ -194,7 +230,7 @@ def _process_search(query, args):
         info = json.loads(line)
         vid_url = info.get("url") or f"https://www.youtube.com/watch?v={info.get('id')}"
 
-        if args.comments or args.transcript:
+        if args.comments or args.transcript or args.audio or args.video:
             result = _process_video(vid_url, args, archive)
             if result:
                 print(json.dumps(result))
@@ -286,6 +322,29 @@ def _process_file(filepath, args):
             sys.stdout.flush()
 
 
+def _update_ytdlp():
+    print("updating yt-dlp...", file=sys.stderr)
+    # try yt-dlp self-update first (works for binary/standalone installs)
+    r = subprocess.run(["yt-dlp", "-U"], capture_output=True, text=True)
+    out = (r.stdout + r.stderr).strip()
+    if out:
+        print(out, file=sys.stderr)
+    if r.returncode == 0 and "pip" not in out.lower() and "not writable" not in out.lower():
+        return 0
+    # fall back to pip (pip-managed install)
+    print("falling back to pip...", file=sys.stderr)
+    r = subprocess.run(
+        [sys.executable, "-m", "pip", "install", "-U", "yt-dlp"],
+        capture_output=True,
+        text=True,
+    )
+    print((r.stdout + r.stderr).strip(), file=sys.stderr)
+    if r.returncode == 0:
+        v = subprocess.run(["yt-dlp", "--version"], capture_output=True, text=True)
+        print(f"yt-dlp now at {v.stdout.strip()}", file=sys.stderr)
+    return r.returncode
+
+
 def register(subparsers):
     p = subparsers.add_parser(
         "youtube-scope",
@@ -293,6 +352,7 @@ def register(subparsers):
     )
     p.add_argument(
         "target",
+        nargs="?",
         help="video/channel/playlist URL, search query, or file with URLs",
     )
     p.add_argument(
@@ -316,10 +376,49 @@ def register(subparsers):
         default=None,
         help="file to track processed video IDs (enables resumability)",
     )
+    p.add_argument(
+        "--audio",
+        action="store_true",
+        help="download audio as mp3 (low quality, for inspection)",
+    )
+    p.add_argument(
+        "--video",
+        action="store_true",
+        help="download low-res video",
+    )
+    p.add_argument(
+        "--res",
+        type=int,
+        default=360,
+        help="max video height when using --video (default 360)",
+    )
+    p.add_argument(
+        "--audio-quality",
+        type=int,
+        default=9,
+        help="mp3 quality 0=best..9=smallest (default 9)",
+    )
+    p.add_argument(
+        "--output-dir",
+        default=".",
+        help="directory for downloaded media (default current dir)",
+    )
+    p.add_argument(
+        "--update",
+        action="store_true",
+        help="update yt-dlp to the latest version and exit",
+    )
     p.set_defaults(func=run)
 
 
 def run(args):
+    if args.update:
+        sys.exit(_update_ytdlp())
+
+    if not args.target:
+        print("error: target required (or use --update)", file=sys.stderr)
+        sys.exit(1)
+
     target_type = _detect_target(args.target)
 
     if target_type == "search":

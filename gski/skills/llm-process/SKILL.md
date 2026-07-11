@@ -13,7 +13,7 @@ Requires `GEMINI_API_KEY` env var.
 
 `gski llm-process` sends files and a prompt to Gemini for processing. Accepts any combination of local files and stdin. PDFs and images are sent as binary parts with native vision; text files are inlined with filenames as headers.
 
-Default model is `gemini-2.5-flash`.
+Default model is `gemini-3.5-flash`.
 
 ## Commands
 

@@ -75,7 +75,7 @@ def cmd_start(args):
     print(f"interaction: {iid}")
     print(f"state:       {job['state']}")
 
-    if args.no_wait:
+    if not args.wait:
         print(f"\nresume with: gski deepresearch wait {job['job_id']}")
         return
 
@@ -218,7 +218,7 @@ def cmd_approve(args):
     print(f"interaction: {iid}")
     print("state:       running")
 
-    if args.no_wait:
+    if not args.wait:
         print(f"\nresume with: gski deepresearch wait {job['job_id']}")
         return
 
@@ -284,9 +284,9 @@ def register(subparsers):
         help="write final report to this path (also saved in state dir)",
     )
     start.add_argument(
-        "--no-wait",
+        "--wait",
         action="store_true",
-        help="return immediately after kicking off; poll later with `wait`",
+        help="block waiting for completion instead of returning immediately",
     )
     start.set_defaults(func=cmd_start)
 
@@ -322,7 +322,7 @@ def register(subparsers):
     )
     appr.add_argument("--output", "-o", help="write final report to this path")
     appr.add_argument(
-        "--no-wait", action="store_true", help="don't block waiting for completion"
+        "--wait", action="store_true", help="block waiting for completion"
     )
     appr.set_defaults(func=cmd_approve)
 

@@ -8,12 +8,7 @@ from google import genai
 from google.genai import types
 from PIL import Image
 
-
-MODELS = {
-    "flash2": "gemini-2.5-flash-image",
-    "flash3": "gemini-3.1-flash-image-preview",
-    "pro": "gemini-3-pro-image-preview",
-}
+from .models import GEMINI_IMAGE as MODELS
 
 ASPECT_RATIOS = [
     "1:1",

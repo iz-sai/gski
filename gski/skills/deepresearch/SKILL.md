@@ -20,11 +20,11 @@ Jobs have a `state`: `running`, `planning`, `completed`, `failed`.
 ## Commands
 
 ```bash
-# Fire-and-forget: start research, poll until done, save report
+# Fire-and-forget: start research, return immediately
 gski deepresearch start "compare EV battery chemistries in 2025"
 
-# Start and return immediately (come back later)
-gski deepresearch start "history of Google TPUs" --no-wait
+# Start and wait for it to finish (blocks)
+gski deepresearch start "history of Google TPUs" --wait
 
 # Resume polling (e.g. after terminal closed)
 gski deepresearch wait <job_id>
@@ -70,7 +70,7 @@ Job IDs can be given by any unique prefix (e.g. `a3f2` matches `a3f2c9b1`).
 | `--max` | off | use `deep-research-max-preview-04-2026` (more comprehensive, more expensive) |
 | `--plan` | off | collaborative planning mode — returns plan instead of executing |
 | `--output`, `-o` | — | write report to path (always also saved in state dir) |
-| `--no-wait` | off | return immediately after kicking off |
+| `--wait` | off | block until completion instead of returning immediately |
 
 ### `approve`
 
@@ -78,7 +78,7 @@ Job IDs can be given by any unique prefix (e.g. `a3f2` matches `a3f2c9b1`).
 |------|---------|-------|
 | `--message`, `-m` | "Plan looks good, proceed." | approval message to the agent |
 | `--output`, `-o` | — | write report to path |
-| `--no-wait` | off | don't block after approval |
+| `--wait` | off | block until completion after approval |
 
 ## Planning workflow
 
@@ -98,6 +98,7 @@ Local state tracks the interaction chain: every plan/refine/execute step is reco
 ## Limits
 
 - Max research time: 60 minutes (most tasks finish within 20).
+- **Known upstream bug:** long-running jobs can permanently break mid-run — `status`/`wait` start returning `400 invalid_request` ("Request contains an invalid argument") and the report becomes unrecoverable. This is a backend flakiness issue (sandbox timeout / interaction-id propagation failure), not a local bug; see the [Google AI dev forum thread](https://discuss.ai.google.dev/t/post-v1beta-interactions-succeeds-but-get-v1beta-interactions-id-returns-403-permission-denied-for-deep-research/129792). Short jobs are unaffected. Nothing local can recover a broken job — restart it.
 - Interactions API is in preview; expect occasional schema changes.
 - Local files are uploaded via `client.files.upload()` then referenced by URI.
 - Streaming thought summaries are not surfaced by this skill; only status transitions and the final report.

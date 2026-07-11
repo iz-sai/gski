@@ -6,13 +6,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-
-MODELS = [
-    "gpt-image-2",
-    "gpt-image-1.5",
-    "gpt-image-1",
-    "gpt-image-1-mini",
-]
+from .models import OPENAI_IMAGE as MODELS
 
 POPULAR_SIZES = [
     "auto",

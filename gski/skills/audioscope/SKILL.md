@@ -13,7 +13,7 @@ Requires `GEMINI_API_KEY` env var.
 
 `gski audioscope` sends audio files or YouTube URLs to Gemini and returns transcriptions. Supports speaker diarization (who said what) and timestamped segments via structured output.
 
-Default model is `gemini-3-flash-preview`. For higher quality: `--model pro`.
+Default model is `gemini-3.5-flash`. For higher quality: `--model pro`.
 
 Files under 15 MB are sent inline. Larger files are uploaded via the Files API automatically.
 

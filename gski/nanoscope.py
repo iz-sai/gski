@@ -12,11 +12,9 @@ from google import genai
 from google.genai import types
 from PIL import Image, ImageDraw
 
+from .models import GEMINI_TEXT
 
-MODELS = {
-    "flash": "gemini-3.5-flash",
-    "pro": "gemini-3.1-pro-preview",
-}
+MODELS = {k: GEMINI_TEXT[k] for k in ("flash", "pro")}
 
 DETECT_SUFFIX = " The box_2d should be [ymin, xmin, ymax, xmax] normalized to 0-1000."
 

@@ -15,7 +15,7 @@ Requires `GEMINI_API_KEY` env var.
 
 Vertex AI Search redirect URLs are automatically resolved to actual source URLs.
 
-Default model is `gemini-2.5-flash`.
+Default model is `gemini-3.5-flash`.
 
 ## Commands
 

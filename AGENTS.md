@@ -14,6 +14,9 @@ gski/
     ├── llm_process.py      # gski llm-process — process files/data with Gemini
     ├── nanobanana.py       # gski nanobanana — Gemini image gen/edit
     ├── nanoscope.py        # gski nanoscope — Gemini image understanding
+    ├── omni.py             # gski omni — Gemini Omni Flash video gen/edit (stateful jobs)
+    ├── omni_lib/           # omni job state, interactions/video plumbing
+    ├── tgscope.py          # gski tgscope — search/read Telegram chat JSON exports
     ├── websearch.py        # gski websearch — web search via Gemini grounding
     ├── youtube_scope.py    # gski youtube-scope — YouTube data extraction via yt-dlp
     ├── setup.py            # gski setup <dir> — copy SKILL.md files
@@ -28,6 +31,10 @@ gski/
         │   └── SKILL.md
         ├── nanoscope/
         │   └── SKILL.md
+        ├── omni/
+        │   └── SKILL.md
+        ├── tgscope/
+        │   └── SKILL.md
         ├── websearch/
         │   └── SKILL.md
         └── youtube-scope/
@@ -41,9 +48,15 @@ gski gptimage2 "prompt" [--image FILE]... [--mask FILE] [--model gpt-image-2|...
 gski llm-process "prompt" --file FILE [--file FILE]... [--model flash|pro] [--system TEXT] [--json] [--no-think]
 gski nanobanana "prompt" [--image FILE]... [--model flash|pro] [--aspect-ratio RATIO] [--size 1K|2K|4K] [--search] [--output-dir DIR]
 gski nanoscope "prompt" --image FILE [--url URL]... [--model flash|pro] [--detect] [--segment] [--output-dir DIR]
+gski omni generate "prompt" [--image FILE]... [--video FILE] [--aspect-ratio 16:9|9:16] [--task text_to_video|image_to_video|reference_to_video|edit] [--output FILE] [--wait]
+gski omni edit <job-id> "prompt" [--aspect-ratio 16:9|9:16] [--output FILE] [--wait]
+gski omni list|status|wait|show|rm ...
+gski tgscope info|search|show <export-dir-or-result.json> ...
+  search "query" [--regex] [--case-sensitive] [--since YYYY-MM-DD] [--until YYYY-MM-DD] [--media KIND] [--min-reactions N] [--limit N] [--width N] [--json]
+  show <ids> [--context N] [--json]   # ids: 12 | 12,15 | 10-20
 gski websearch "query" [--model flash|flash-lite] [--raw]
-gski youtube-scope <target> [--comments] [--transcript] [--limit N] [--archive FILE]
-gski deepresearch start "query" [--file F]... [--max] [--plan] [--output FILE] [--no-wait]
+gski youtube-scope <target> [--comments] [--transcript] [--limit N] [--archive FILE] [--audio] [--video] [--res N] [--audio-quality N] [--output-dir DIR] [--update]
+gski deepresearch start "query" [--file F]... [--max] [--plan] [--output FILE] [--wait]
 gski deepresearch list|status|wait|show|refine|approve|rm ...
 gski setup <target-dir>
 ```

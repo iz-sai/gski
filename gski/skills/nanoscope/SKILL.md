@@ -13,7 +13,7 @@ Requires `GEMINI_API_KEY` env var.
 
 `gski nanoscope` sends images + a text prompt to Gemini's multimodal models and returns text or structured analysis. Unlike nanobanana (which generates images), nanoscope analyzes existing images.
 
-Default model is `gemini-3-flash-preview`. For higher quality: `--model pro`.
+Default model is `gemini-3.5-flash`. For higher quality: `--model pro`.
 
 ## Commands
 

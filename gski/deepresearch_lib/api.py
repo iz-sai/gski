@@ -12,11 +12,7 @@ warnings.filterwarnings(
 
 from google import genai
 
-
-AGENT_MODELS = {
-    "default": "deep-research-preview-04-2026",
-    "max": "deep-research-max-preview-04-2026",
-}
+from ..models import GEMINI_DEEP_RESEARCH as AGENT_MODELS
 
 POLL_INTERVAL = 10
 
@@ -83,9 +79,45 @@ def build_input(prompt, files, client):
     return parts
 
 
+def _part_text(part):
+    if part is None:
+        return None
+    if isinstance(part, str):
+        return part
+    if isinstance(part, dict):
+        return part.get("text")
+    return getattr(part, "text", None)
+
+
+def _step_text(step):
+    """Pull text from a step's `content`, which may be a string, a part, or a
+    list of parts."""
+    content = (
+        step.get("content") if isinstance(step, dict) else getattr(step, "content", None)
+    )
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    parts = content if isinstance(content, (list, tuple)) else [content]
+    return "\n\n".join(t for t in (_part_text(p) for p in parts) if t)
+
+
 def extract_text(interaction):
+    # New schema: full report is assembled from `steps[].content` parts.
+    steps = getattr(interaction, "steps", None) or []
+    chunks = [t for t in (_step_text(s) for s in steps) if t]
+    if chunks:
+        return "\n\n".join(chunks)
+
+    # Newer single-field fallback.
+    output_text = getattr(interaction, "output_text", None)
+    if output_text:
+        return output_text
+
+    # Legacy schema: `outputs` list of text parts.
     outputs = getattr(interaction, "outputs", None) or []
-    chunks = []
+    legacy = []
     for out in outputs:
         text = getattr(out, "text", None)
         otype = getattr(out, "type", None)
@@ -93,9 +125,10 @@ def extract_text(interaction):
             text = out.get("text")
             otype = out.get("type")
         if text and (otype is None or otype == "text"):
-            chunks.append(text)
-    if chunks:
-        return "".join(chunks)
+            legacy.append(text)
+    if legacy:
+        return "".join(legacy)
+
     return getattr(interaction, "text", "") or ""
 
 

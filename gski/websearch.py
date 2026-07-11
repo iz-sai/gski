@@ -5,11 +5,9 @@ import urllib.request
 from google import genai
 from google.genai import types
 
+from .models import GEMINI_TEXT
 
-MODELS = {
-    "flash": "gemini-3.5-flash",
-    "flash-lite": "gemini-3.1-flash-lite-preview",
-}
+MODELS = {k: GEMINI_TEXT[k] for k in ("flash", "flash-lite")}
 
 
 def resolve_vertex_url(vertex_uri):
