@@ -33,6 +33,7 @@ gski nanobanana "prompt" --image a.png --image b.png    # multi-image compositio
 | `--size` | `1K`,`2K`,`4K` | `1K` | resolution (pro model only) |
 | `--search` | flag | off | enable Google Search grounding |
 | `--output-dir` | path | `./gski nanobanana-output` | where to save output |
+| `-o`, `--output` | path | none | exact output file path; overrides `--output-dir` and auto-naming |
 
 ## Examples
 

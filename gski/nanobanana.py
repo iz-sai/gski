@@ -67,12 +67,21 @@ def build_contents(prompt, image_paths):
     return contents
 
 
-def save_images(response, output_dir, ext="jpg"):
-    output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+def save_images(response, output_dir, ext="jpg", output=None):
     saved = []
     img_idx = 0
+
+    if output:
+        output_path = Path(output)
+        output_dir = output_path.parent
+        output_dir.mkdir(parents=True, exist_ok=True)
+        stem = output_path.stem
+        suffix = output_path.suffix.lstrip(".") or ext
+    else:
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        stem = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        suffix = ext
 
     for part in response.parts:
         if part.thought:
@@ -80,12 +89,12 @@ def save_images(response, output_dir, ext="jpg"):
         if part.text is not None:
             print(part.text)
         elif part.inline_data is not None:
-            suffix = f"_{img_idx}" if img_idx > 0 else ""
-            filename = f"{ts}{suffix}.{ext}"
+            idx_suffix = f"_{img_idx}" if img_idx > 0 else ""
+            filename = f"{stem}{idx_suffix}.{suffix}"
             filepath = output_dir / filename
             raw = part.inline_data.data
             image = Image.open(io.BytesIO(raw))
-            if ext in ("jpg", "jpeg"):
+            if suffix in ("jpg", "jpeg"):
                 image = image.convert("RGB")
             image.save(filepath)
             saved.append(filepath)
@@ -136,6 +145,12 @@ def register(subparsers):
         default="./output",
         help="output directory (default: ./output)",
     )
+    p.add_argument(
+        "-o",
+        "--output",
+        metavar="FILE",
+        help="output file path (overrides --output-dir and auto-naming; extension sets format unless --format given)",
+    )
     p.set_defaults(func=run)
 
 
@@ -164,7 +179,7 @@ def run(args):
         config=config,
     )
 
-    saved = save_images(response, args.output_dir, ext=args.format)
+    saved = save_images(response, args.output_dir, ext=args.format, output=args.output)
 
     if not saved:
         print("error: no images generated", file=sys.stderr)
