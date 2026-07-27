@@ -32,11 +32,10 @@ FLAT_DIARIZE_SCHEMA = types.Schema(
 
 
 def _thinking_config_kwargs(model: str | None = None):
-    # Pro models require thinking mode (budget > 0 or dynamic); passing
-    # budget=0 yields "400 Budget 0 is invalid. This model only works in
-    # thinking mode." Omit the thinking config entirely for pro so the
-    # server uses its default.
-    if model and "pro" in model:
+    # Gemini 3.x models (e.g. gemini-3.6-flash, gemini-3.1-pro) fail if
+    # thinking_budget=0 is passed, yielding 400 INVALID_ARGUMENT or
+    # "Budget 0 is invalid". Omit thinking_config for models that are not 2.5.
+    if model is None or "2.5" not in model:
         return {}
     if not hasattr(types, "ThinkingConfig"):
         return {}
