@@ -3,12 +3,6 @@ name: gski youtube-scope
 description: Extract data from YouTube — metadata, comments, transcripts via yt-dlp
 ---
 
-## Setup
-
-Check: `which gski`
-Install if missing: `pip install gski` (from the gski repo)
-Requires `yt-dlp` installed: `which yt-dlp`
-
 ## How it works
 
 `gski youtube-scope` wraps yt-dlp to extract structured data from YouTube. Give it a target — a video URL, channel URL, playlist URL, search query, or a file of URLs — and it returns JSONL (one JSON object per video) to stdout. Progress goes to stderr.

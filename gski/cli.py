@@ -17,6 +17,7 @@ def main():
     from gski.omni import register as omni_register
     from gski.setup import register as setup_register
     from gski.tgscope import register as tg_register
+    from gski.voiceover import register as vo_register
     from gski.websearch import register as ws_register
     from gski.solver import register as sv_register
     from gski.youtube_scope import register as ys_register
@@ -30,6 +31,7 @@ def main():
     omni_register(sub)
     setup_register(sub)
     tg_register(sub)
+    vo_register(sub)
     sv_register(sub)
     ws_register(sub)
     ys_register(sub)

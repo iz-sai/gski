@@ -40,12 +40,12 @@ def upload_video(client, path):
     return uri, mime
 
 
-def build_input(prompt, images, video, client):
-    if not images and not video:
+def build_input(prompt, images, videos, client):
+    if not images and not videos:
         return prompt
 
     parts = []
-    if video:
+    for video in videos:
         uri, mime = upload_video(client, video)
         parts.append({"type": "document", "uri": uri, "mime_type": mime})
     for img in images:
@@ -59,10 +59,15 @@ def build_input(prompt, images, video, client):
     return parts
 
 
-def build_response_format(aspect_ratio):
-    fmt = {"type": "video", "delivery": "uri"}
+def build_response_format(aspect_ratio, resolution, duration=None):
+    fmt = {"type": "video", "delivery": "uri", "resolution": resolution}
     if aspect_ratio:
         fmt["aspect_ratio"] = aspect_ratio
+    if duration:
+        d = str(duration).strip()
+        if d.isdigit():
+            d = f"{d}s"
+        fmt["duration"] = d
     return fmt
 
 
@@ -85,9 +90,7 @@ def poll(client, interaction_id, interval=POLL_INTERVAL):
         if status == "completed":
             return interaction
         if status == "failed":
-            err = getattr(interaction, "error", "unknown error")
-            print(f"error: generation failed: {err}", file=sys.stderr)
-            sys.exit(2)
+            return interaction
         time.sleep(interval)
 
 

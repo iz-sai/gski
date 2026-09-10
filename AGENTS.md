@@ -17,6 +17,7 @@ gski/
     ├── omni.py             # gski omni — Gemini Omni Flash video gen/edit (stateful jobs)
     ├── omni_lib/           # omni job state, interactions/video plumbing
     ├── tgscope.py          # gski tgscope — search/read Telegram chat JSON exports
+    ├── voiceover.py        # gski voiceover — ElevenLabs text-to-speech
     ├── websearch.py        # gski websearch — web search via Gemini grounding
     ├── youtube_scope.py    # gski youtube-scope — YouTube data extraction via yt-dlp
     ├── setup.py            # gski setup <dir> — copy SKILL.md files
@@ -35,7 +36,11 @@ gski/
         │   └── SKILL.md
         ├── tgscope/
         │   └── SKILL.md
+        ├── voiceover/
+        │   └── SKILL.md
         ├── websearch/
+        │   └── SKILL.md
+        ├── wordsmith/          # prompt-only, no CLI
         │   └── SKILL.md
         └── youtube-scope/
             └── SKILL.md
@@ -46,14 +51,16 @@ gski/
 ```
 gski gptimage2 "prompt" [--image FILE]... [--mask FILE] [--model gpt-image-2|...] [--size WxH|auto] [--quality auto|low|medium|high] [--format jpg|png|webp] [--compression N] [--background auto|opaque] [-n N] [--output-dir DIR]
 gski llm-process "prompt" --file FILE [--file FILE]... [--model flash|pro] [--system TEXT] [--json] [--no-think]
-gski nanobanana "prompt" [--image FILE]... [--model flash|pro] [--aspect-ratio RATIO] [--size 1K|2K|4K] [--search] [--output-dir DIR]
+gski nanobanana "prompt" [--image FILE]... [--model flash3|flash2] [--aspect-ratio RATIO] [--size 1K|2K|4K] [--search] [--output-dir DIR]
 gski nanoscope "prompt" --image FILE [--url URL]... [--model flash|pro] [--detect] [--segment] [--output-dir DIR]
-gski omni generate "prompt" [--image FILE]... [--video FILE] [--aspect-ratio 16:9|9:16] [--task text_to_video|image_to_video|reference_to_video|edit] [--output FILE] [--wait]
-gski omni edit <job-id> "prompt" [--aspect-ratio 16:9|9:16] [--output FILE] [--wait]
+gski omni generate "prompt" [--image FILE]... [--video FILE]... [--aspect-ratio 16:9|9:16] [--resolution 360p|720p|1080p|4k] [--task text_to_video|image_to_video|reference_to_video|edit|extend] [--output FILE] [--async]
+gski omni edit <job-id> "prompt" [--image FILE]... [--video FILE]... [--aspect-ratio 16:9|9:16] [--resolution 360p|720p|1080p|4k] [--output FILE] [--async]
+gski omni extend <job-id> ["prompt"] [--image FILE]... [--video FILE]... [--output FILE] [--async]
 gski omni list|status|wait|show|rm ...
 gski tgscope info|search|show <export-dir-or-result.json> ...
   search "query" [--regex] [--case-sensitive] [--since YYYY-MM-DD] [--until YYYY-MM-DD] [--media KIND] [--min-reactions N] [--limit N] [--width N] [--json]
   show <ids> [--context N] [--json]   # ids: 12 | 12,15 | 10-20
+gski voiceover "text" [--voice NAME_OR_ID] [--model v3|multilingual|flash] [--stability N] [--style N] [--similarity N] [--speed N] [--no-speaker-boost] [--format FMT] [-o FILE] [--output-dir DIR] [--list-voices]
 gski websearch "query" [--model flash|flash-lite] [--raw]
 gski youtube-scope <target> [--comments] [--transcript] [--limit N] [--archive FILE] [--audio] [--video] [--res N] [--audio-quality N] [--output-dir DIR] [--update]
 gski deepresearch start "query" [--file F]... [--max] [--plan] [--output FILE] [--wait]
@@ -74,6 +81,7 @@ gski setup <target-dir>
 - `Pillow` — image handling
 - Requires `GEMINI_API_KEY` env var
 - Requires `OPENAI_API_KEY` env var for gptimage2
+- Requires `ELEVENLABS_API_KEY` env var for voiceover (accepts `ELEVEN_LABS_API_KEY`)
 - Requires `yt-dlp` for youtube-scope
 
 ## Install

@@ -63,6 +63,9 @@ def build_diarize_config(
         candidate_count=1,
         seed=seed,
         max_output_tokens=max_output_tokens,
+        automatic_function_calling=types.AutomaticFunctionCallingConfig(
+            disable=True
+        ),
         **_thinking_config_kwargs(model),
     )
 

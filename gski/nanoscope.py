@@ -20,7 +20,11 @@ DETECT_SUFFIX = " The box_2d should be [ymin, xmin, ymax, xmax] normalized to 0-
 
 
 def build_config(args):
-    kwargs = {}
+    kwargs = {
+        "automatic_function_calling": types.AutomaticFunctionCallingConfig(
+            disable=True
+        )
+    }
 
     if args.detect:
         kwargs["response_mime_type"] = "application/json"
@@ -28,8 +32,6 @@ def build_config(args):
     if args.segment:
         kwargs["thinking_config"] = types.ThinkingConfig(thinking_budget=0)
 
-    if not kwargs:
-        return None
     return types.GenerateContentConfig(**kwargs)
 
 

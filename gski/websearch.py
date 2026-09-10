@@ -87,6 +87,9 @@ def run(args):
     config = types.GenerateContentConfig(
         tools=[types.Tool(google_search=types.GoogleSearch())],
         system_instruction="Always use Google Search to find the most current, up-to-date information before answering. Never rely on your training data alone.",
+        automatic_function_calling=types.AutomaticFunctionCallingConfig(
+            disable=True
+        ),
     )
 
     response = client.models.generate_content(

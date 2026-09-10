@@ -21,6 +21,7 @@ def test_build_diarize_config_has_flat_schema_and_hardened_params():
     assert cfg.top_k == 1
     assert cfg.candidate_count == 1
     assert cfg.seed == 42
+    assert cfg.automatic_function_calling.disable is True
 
 
 def test_build_diarize_config_25_flash_sets_thinking_budget_zero():
@@ -33,6 +34,12 @@ def test_build_diarize_config_25_flash_sets_thinking_budget_zero():
 def test_build_diarize_config_36_flash_omits_thinking_config():
     # 3.6 Flash rejects thinking_budget=0 with 400 INVALID_ARGUMENT.
     cfg = build_diarize_config(timestamps=True, model="gemini-3.6-flash")
+    assert cfg.thinking_config is None
+
+
+def test_build_diarize_config_38_flash_omits_thinking_config():
+    # 3.8 Flash rejects thinking_budget=0 with 400 INVALID_ARGUMENT.
+    cfg = build_diarize_config(timestamps=True, model="gemini-3.8-flash")
     assert cfg.thinking_config is None
 
 

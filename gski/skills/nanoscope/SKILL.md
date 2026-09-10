@@ -3,17 +3,11 @@ name: gski nanoscope
 description: Understand and analyze images — captioning, comparison, object detection, segmentation
 ---
 
-## Setup
-
-Check: `which gski`
-Install if missing: `pip install gski` (from the gski repo)
-Requires `GEMINI_API_KEY` env var.
-
 ## How it works
 
 `gski nanoscope` sends images + a text prompt to Gemini's multimodal models and returns text or structured analysis. Unlike nanobanana (which generates images), nanoscope analyzes existing images.
 
-Default model is `gemini-3.6-flash`.
+Default model is `gemini-3.8-flash`.
 
 ## Commands
 
@@ -41,7 +35,7 @@ gski nanoscope "segment the wooden and glass items" --image room.png --segment
 |------|--------|---------|-------|
 | `--image FILE` | repeatable | none | local input image(s) |
 | `--url URL` | repeatable | none | image URL(s) to fetch and analyze |
-| `--model` | `flash`, `pro` | `flash` | model selection |
+| `--model` | `flash` | `flash` | model selection |
 | `--detect` | flag | off | object detection mode (JSON output) |
 | `--segment` | flag | off | segmentation mode (saves PNGs) |
 | `--output-dir` | path | `./nanoscope-output` | where segmentation saves masks/overlays |

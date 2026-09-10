@@ -1,5 +1,5 @@
 GEMINI_TEXT = {
-    "flash": "gemini-3.6-flash",
+    "flash": "gemini-3.8-flash",
     "flash-lite": "gemini-3.1-flash-lite-preview",
     "pro": "gemini-3.1-pro-preview"
 }
@@ -16,7 +16,7 @@ GEMINI_DEEP_RESEARCH = {
 }
 
 GEMINI_OMNI = {
-    "flash": "gemini-omni-flash-preview",
+    "flash": "gemini-omni-1.1-flash",
 }
 
 OPENAI_IMAGE = [

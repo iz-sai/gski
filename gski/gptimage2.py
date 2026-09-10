@@ -28,20 +28,29 @@ def validate_size(value):
     return value
 
 
-PIL_FORMAT = {"jpg": "JPEG", "png": "PNG", "webp": "WEBP"}
+PIL_FORMAT = {"jpg": "JPEG", "jpeg": "JPEG", "png": "PNG", "webp": "WEBP"}
 
 
-def save_b64_images(data_items, output_dir, ext, compression=None):
+def save_b64_images(data_items, output_dir, ext, compression=None, output=None):
     from PIL import Image
 
-    output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-    target = PIL_FORMAT[ext]
+    if output:
+        output_path = Path(output)
+        output_dir = output_path.parent
+        output_dir.mkdir(parents=True, exist_ok=True)
+        stem = output_path.stem
+        file_ext = output_path.suffix.lstrip(".").lower() or ext
+    else:
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        stem = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        file_ext = ext
+
+    target = PIL_FORMAT.get(file_ext, PIL_FORMAT.get("jpg", "JPEG"))
     saved = []
     for i, b64 in enumerate(data_items):
         suffix = f"_{i}" if i > 0 else ""
-        filepath = output_dir / f"{ts}{suffix}.{ext}"
+        filepath = output_dir / f"{stem}{suffix}.{file_ext}"
         raw = base64.b64decode(b64)
         img = Image.open(io.BytesIO(raw))
         save_kwargs = {}
@@ -59,7 +68,9 @@ def save_b64_images(data_items, output_dir, ext, compression=None):
 
 def register(subparsers):
     p = subparsers.add_parser(
-        "gptimage2", help="generate or edit images via OpenAI GPT Image"
+        "gptimage2",
+        aliases=["gpt-image", "gptimage"],
+        help="generate or edit images via OpenAI GPT Image",
     )
     p.add_argument("prompt", help="text prompt for generation or editing")
     p.add_argument(
@@ -122,11 +133,22 @@ def register(subparsers):
         default="./output",
         help="output directory (default: ./output)",
     )
+    p.add_argument(
+        "-o",
+        "--output",
+        metavar="FILE",
+        help="output file path (overrides --output-dir and auto-naming; extension sets format unless --format given)",
+    )
     p.set_defaults(func=run)
 
 
 def run(args):
     validate_size(args.size)
+
+    if args.output:
+        out_ext = Path(args.output).suffix.lstrip(".").lower()
+        if out_ext in ("jpg", "jpeg", "png", "webp") and "--format" not in sys.argv:
+            args.format = "jpg" if out_ext == "jpeg" else out_ext
 
     for p in args.image:
         if not os.path.isfile(p):
@@ -199,7 +221,11 @@ def run(args):
         sys.exit(1)
 
     saved = save_b64_images(
-        data_items, args.output_dir, ext=args.format, compression=args.compression
+        data_items,
+        args.output_dir,
+        ext=args.format,
+        compression=args.compression,
+        output=args.output,
     )
     for path in saved:
         print(path)

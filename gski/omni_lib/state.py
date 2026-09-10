@@ -69,20 +69,25 @@ def all_jobs():
     return jobs
 
 
-def new_job(prompt, model):
+def new_job(prompt, model, aspect_ratio, resolution, duration=None):
     job_id = new_job_id()
     ts = now_iso()
-    return {
+    job = {
         "job_id": job_id,
         "created_at": ts,
         "updated_at": ts,
         "prompt": prompt,
         "model": model,
+        "aspect_ratio": aspect_ratio,
+        "resolution": resolution,
         "state": "running",
         "interactions": [],
         "current_interaction_id": None,
         "video_path": None,
     }
+    if duration:
+        job["duration"] = duration
+    return job
 
 
 def record_interaction(job, interaction_id, kind, prompt):
@@ -95,6 +100,7 @@ def record_interaction(job, interaction_id, kind, prompt):
         }
     )
     job["current_interaction_id"] = interaction_id
+    job["state"] = "running"
 
 
 def remove_job(job, keep_video=False):

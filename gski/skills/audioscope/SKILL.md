@@ -3,17 +3,11 @@ name: gski audioscope
 description: Transcribe and diarize audio — speech-to-text, speaker identification, timestamps
 ---
 
-## Setup
-
-Check: `which gski`
-Install if missing: `pip install gski` (from the gski repo)
-Requires `GEMINI_API_KEY` env var.
-
 ## How it works
 
 `gski audioscope` sends audio files or YouTube URLs to Gemini and returns transcriptions. Supports speaker diarization (who said what) and timestamped segments via structured output.
 
-Default model is `gemini-3.6-flash`.
+Default model is `gemini-3.8-flash`.
 
 Files under 15 MB are sent inline. Larger files are uploaded via the Files API automatically.
 

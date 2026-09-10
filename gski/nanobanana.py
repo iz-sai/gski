@@ -26,7 +26,11 @@ SIZES = ["1K", "2K", "4K"]
 
 
 def build_config(args):
-    kwargs = {}
+    kwargs = {
+        "automatic_function_calling": types.AutomaticFunctionCallingConfig(
+            disable=True
+        )
+    }
 
     if args.model == "pro":
         kwargs["response_modalities"] = ["TEXT", "IMAGE"]
@@ -43,8 +47,6 @@ def build_config(args):
     if args.search:
         kwargs["tools"] = [{"google_search": {}}]
 
-    if not kwargs:
-        return None
     return types.GenerateContentConfig(**kwargs)
 
 
@@ -117,7 +119,7 @@ def register(subparsers):
         "--model",
         choices=list(MODELS.keys()),
         default="flash3",
-        help="model to use (default: flash)",
+        help="model to use (default: flash3)",
     )
     p.add_argument(
         "--aspect-ratio",

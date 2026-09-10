@@ -25,11 +25,20 @@ from gski.omni_lib.state import (
 )
 
 ASPECT_RATIOS = ["16:9", "9:16"]
-TASKS = ["text_to_video", "image_to_video", "reference_to_video", "edit"]
+RESOLUTIONS = ["360p", "720p", "1080p", "4k"]
+TASKS = ["text_to_video", "image_to_video", "reference_to_video", "edit", "extend"]
 
 
 def _finish(job, client, interaction, output):
-    data, uri, mime = extract_video(interaction)
+    status = getattr(interaction, "status", None)
+    if status == "failed":
+        job["state"] = "failed"
+        save_job(job)
+        err = getattr(interaction, "error", "unknown error")
+        print(f"error: generation failed: {err}", file=sys.stderr)
+        sys.exit(2)
+
+    data, uri, _mime = extract_video(interaction)
     internal = video_path_for(job["job_id"])
     download_video(client, data, uri, internal)
     job["video_path"] = str(internal)
@@ -38,6 +47,7 @@ def _finish(job, client, interaction, output):
 
     if output:
         out = Path(output)
+        out.parent.mkdir(parents=True, exist_ok=True)
         out.write_bytes(internal.read_bytes())
         print(out)
     else:
@@ -48,17 +58,28 @@ def _resume_hint(job_id):
     print(f"\nresume with: gski omni wait {job_id}", file=sys.stderr)
 
 
+def _complete(job, client, interaction, output):
+    status = getattr(interaction, "status", None)
+    if status not in ("completed", "failed"):
+        interaction = poll(client, job["current_interaction_id"])
+    _finish(job, client, interaction, output)
+
+
 def cmd_generate(args):
     client = make_client()
     model = MODELS["flash"]
 
     user_input = build_input(args.prompt, args.image, args.video, client)
+    is_async = args.async_mode
     kwargs = {
         "model": model,
         "input": user_input,
-        "background": True,
+        "background": is_async,
         "store": True,
-        "response_format": build_response_format(args.aspect_ratio),
+        "stream": False,
+        "response_format": build_response_format(
+            args.aspect_ratio, args.resolution, args.duration
+        ),
     }
     gen_config = build_generation_config(args.task)
     if gen_config:
@@ -67,50 +88,76 @@ def cmd_generate(args):
     interaction = interactions_create(client, **kwargs)
     iid = new_interaction_id(interaction)
 
-    job = new_job(prompt=args.prompt, model=model)
+    job = new_job(
+        prompt=args.prompt,
+        model=model,
+        aspect_ratio=args.aspect_ratio,
+        resolution=args.resolution,
+        duration=args.duration,
+    )
     record_interaction(job, iid, "generate", args.prompt)
     save_job(job)
 
     print(f"job:         {job['job_id']}")
     print(f"interaction: {iid}")
-    print(f"state:       {job['state']}")
 
-    if not args.wait:
+    if is_async:
+        print(f"state:       {job['state']}")
         _resume_hint(job["job_id"])
         return
 
-    result = poll(client, iid)
-    _finish(job, client, result, args.output)
+    _complete(job, client, interaction, args.output)
 
 
-def cmd_edit(args):
+def _follow_up(args, kind):
     job = load_job(args.id)
     client = make_client()
+    is_async = args.async_mode
+    user_input = build_input(
+        args.prompt,
+        getattr(args, "image", []),
+        getattr(args, "video", []),
+        client,
+    )
+    aspect_ratio = args.aspect_ratio or job.get("aspect_ratio") or "9:16"
+    resolution = args.resolution or job.get("resolution") or "720p"
+    duration = getattr(args, "duration", None) or job.get("duration")
 
     interaction = interactions_create(
         client,
         model=job["model"],
-        input=args.prompt,
+        input=user_input,
         previous_interaction_id=job["current_interaction_id"],
-        background=True,
+        background=is_async,
         store=True,
-        response_format=build_response_format(args.aspect_ratio),
+        stream=False,
+        response_format=build_response_format(aspect_ratio, resolution, duration),
     )
     iid = new_interaction_id(interaction)
-    record_interaction(job, iid, "edit", args.prompt)
-    job["state"] = "running"
+    record_interaction(job, iid, kind, args.prompt)
+    job["aspect_ratio"] = aspect_ratio
+    job["resolution"] = resolution
+    if duration:
+        job["duration"] = duration
     save_job(job)
 
     print(f"job:         {job['job_id']}")
     print(f"interaction: {iid}")
-    print(f"state:       running")
 
-    if not args.wait:
+    if is_async:
+        print(f"state:       running")
         _resume_hint(job["job_id"])
         return
 
-    result = poll(client, iid)
-    _finish(job, client, result, args.output)
+    _complete(job, client, interaction, args.output)
+
+
+def cmd_edit(args):
+    _follow_up(args, "edit")
+
+
+def cmd_extend(args):
+    _follow_up(args, "extend")
 
 
 def cmd_list(args):
@@ -176,6 +223,59 @@ def cmd_rm(args):
     print(f"removed job {job['job_id']}")
 
 
+def _add_media_options(parser, video_help):
+    parser.add_argument(
+        "--image",
+        action="append",
+        default=[],
+        metavar="FILE",
+        help="image input in prompt-tag order (repeatable)",
+    )
+    parser.add_argument(
+        "--video",
+        action="append",
+        default=[],
+        metavar="FILE",
+        help=f"{video_help} (repeatable)",
+    )
+
+
+def _add_output_options(parser, default_aspect=None, default_resolution=None):
+    parser.add_argument(
+        "--aspect-ratio",
+        choices=ASPECT_RATIOS,
+        default=default_aspect,
+        metavar="RATIO",
+        help="output aspect ratio" + (f" (default: {default_aspect})" if default_aspect else ""),
+    )
+    parser.add_argument(
+        "--resolution",
+        choices=RESOLUTIONS,
+        default=default_resolution,
+        help="output resolution"
+        + (f" (default: {default_resolution})" if default_resolution else ""),
+    )
+    parser.add_argument(
+        "--duration",
+        help="clip duration (e.g. 4s, 5s, 10s; range 3s-10s)",
+    )
+    parser.add_argument("--output", "-o", help="also write the video to this path")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument(
+        "--wait",
+        dest="async_mode",
+        action="store_false",
+        help="wait for the video (default)",
+    )
+    mode.add_argument(
+        "--async",
+        dest="async_mode",
+        action="store_true",
+        help="return a job id and generate in the background",
+    )
+    parser.set_defaults(async_mode=False)
+
+
 def register(subparsers):
     p = subparsers.add_parser(
         "omni",
@@ -185,40 +285,33 @@ def register(subparsers):
 
     gen = sp.add_parser("generate", help="generate a video from text/image/video inputs")
     gen.add_argument("prompt", help="text prompt")
-    gen.add_argument(
-        "--image",
-        action="append",
-        default=[],
-        metavar="FILE",
-        help="reference/first-frame image (repeatable)",
-    )
-    gen.add_argument("--video", metavar="FILE", help="source video to edit/transform")
-    gen.add_argument(
-        "--aspect-ratio",
-        choices=ASPECT_RATIOS,
-        metavar="RATIO",
-        help="output aspect ratio (16:9 default, 9:16 portrait)",
-    )
+    _add_media_options(gen, "source/reference video")
+    _add_output_options(gen, default_aspect="9:16", default_resolution="720p")
     gen.add_argument(
         "--task",
         choices=TASKS,
-        help="explicit task hint (inferred from prompt if unset)",
-    )
-    gen.add_argument("--output", "-o", help="also write the video to this path")
-    gen.add_argument(
-        "--wait", action="store_true", help="block until the video is ready"
+        help="fallback task hint; prefer describing the task in the prompt",
     )
     gen.set_defaults(func=cmd_generate)
 
     edit = sp.add_parser("edit", help="edit a job's video with a follow-up prompt")
     edit.add_argument("id", help="job id (prefix ok)")
     edit.add_argument("prompt", help="edit instruction")
-    edit.add_argument(
-        "--aspect-ratio", choices=ASPECT_RATIOS, metavar="RATIO", help="output aspect ratio"
-    )
-    edit.add_argument("--output", "-o", help="also write the video to this path")
-    edit.add_argument("--wait", action="store_true", help="block until the video is ready")
+    _add_media_options(edit, "reference video")
+    _add_output_options(edit)
     edit.set_defaults(func=cmd_edit)
+
+    extend = sp.add_parser("extend", help="extend a job's video at the end")
+    extend.add_argument("id", help="job id (prefix ok)")
+    extend.add_argument(
+        "prompt",
+        nargs="?",
+        default="Extend this video.",
+        help="continuation instruction (default: Extend this video.)",
+    )
+    _add_media_options(extend, "reference video")
+    _add_output_options(extend)
+    extend.set_defaults(func=cmd_extend)
 
     lst = sp.add_parser("list", help="list tracked jobs")
     lst.add_argument("--all", "-a", action="store_true", help="include completed jobs")

@@ -3,11 +3,6 @@ name: gski tgscope
 description: Search, read, and summarize Telegram chat/channel JSON exports — find posts, read full messages, get overviews, and produce a structured digest of a whole channel
 ---
 
-## Setup
-
-Check: `which gski`
-Install if missing: `pip install -e .` from the gski repo.
-
 ## How it works
 
 Telegram Desktop exports a channel or chat as a single large `result.json` (inside a `ChatExport_*` folder). The raw file is awkward to read directly — **do not read it raw**. `gski tgscope` wraps it so you can search and read messages without loading the whole thing into context.
@@ -127,21 +122,19 @@ RANGE=$(python3 -c "import json,sys; m=json.load(open(sys.argv[1]))['messages'];
 # 3. Dump all posts to raw text (keep it out of context; write to a file)
 gski tgscope show "$EXPORT" "$RANGE" > posts_raw.txt
 
-# 4. Structured summary via llm-process (use --model pro for long channels).
+# 4. Structured summary via llm-process.
 #    Match the summary language to the channel's language.
 gski llm-process "This is a raw dump of Telegram channel posts. Produce a
 structured summary covering: 1) overall theme and how the author positions
 themselves 2) main recurring topics/rubrics with rough frequency 3) key ideas
 and opinions 4) tone and style toward the audience 5) how content evolves over
 time 6) target audience. Ignore '(not found)' lines — technical noise." \
-  -f posts_raw.txt --model pro
+  -f posts_raw.txt
 ```
 
 Notes on this flow:
 - `show` prints `(not found)` for gaps/service-only ids — harmless; the prompt
   tells the model to ignore them.
-- For very large channels the raw dump may be big; `--model pro` handles long
-  context better than flash.
 - Write the dump to a file and pass it with `-f`; do not read `posts_raw.txt`
   back into the conversation.
 

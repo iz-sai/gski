@@ -3,12 +3,6 @@ name: gski deepresearch
 description: Gemini Deep Research agent — async multi-step research with planning, citations, and long-form reports
 ---
 
-## Setup
-
-Check: `which gski`
-Install if missing: `pip install -e .` from `~/Documents/gski`
-Requires `GEMINI_API_KEY` env var.
-
 ## How it works
 
 Deep Research is an autonomous agent that plans, searches, reads, and synthesizes multi-step research tasks. Tasks run in the background on Google's infrastructure and typically take several minutes. This skill wraps the Interactions API with local job tracking so tasks survive disconnects.

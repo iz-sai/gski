@@ -3,12 +3,6 @@ name: gski solver
 description: Creative problem-solving toolkit — TRIZ, SCAMPER, Lateral Thinking, Six Hats, Morphological Analysis
 ---
 
-## Setup
-
-Check: `which gski`
-Install if missing: `pip install -e .` from `~/Documents/gski`
-No API keys required — this tool is pure computation and randomness.
-
 ## How it works
 
 `gski solver` provides structured creative problem-solving frameworks as CLI tools. It handles the mechanical parts that LLMs do poorly: true randomness, data lookups, and enforced structure. You (the LLM) provide the creative thinking.
