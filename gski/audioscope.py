@@ -1,33 +1,32 @@
 import json
 import os
+import re
+import subprocess
 import sys
-from datetime import datetime
+import tempfile
 from pathlib import Path
 
-from .models import GEMINI_TEXT
-
+from .models import GEMINI_TEXT, GEMINI_TRANSCRIBE
 
 MODELS = {k: GEMINI_TEXT[k] for k in ("flash", "pro")}
 
-PROMPT_TRANSCRIBE = "Generate a transcript of the speech."
-
-PROMPT_TRANSCRIBE_TS = (
-    "Generate a transcript of the speech. "
-    "Provide accurate timestamps for each segment in MM:SS format."
+DEFAULT_LIKE = (
+    "bizarre expressive non-verbal vocalizations: guttural growls, throat rumbles, "
+    "exaggerated groans, theatrical gasps, comic grunts, lip smacking, gibberish noises"
 )
 
-PROMPT_DIARIZE = (
-    "Generate a transcript of the speech with speaker diarization. "
-    "Identify and label each speaker (Speaker 1, Speaker 2, etc). "
-    "Group consecutive speech by the same speaker into segments."
-)
+PROMPT_SOUNDS = """Listen carefully to this audio and find non-verbal sounds that match this description:
+{like}
+{context}
+Rules:
+- Do NOT include normal words, speech, or dialogue.
+- Do NOT include plain laughter or chuckles unless the description asks for them.
+- Only report sounds that are clearly audible and distinct; return an empty list if there are none.
+- Timestamps are relative to the start of this audio, format MM:SS.
 
-PROMPT_DIARIZE_TS = (
-    "Generate a transcript of the speech with speaker diarization. "
-    "Identify and label each speaker (Speaker 1, Speaker 2, etc). "
-    "Group consecutive speech by the same speaker into segments. "
-    "Provide accurate timestamps for each segment in MM:SS format."
-)
+Return a JSON array:
+[{{"start": "MM:SS", "end": "MM:SS", "sound": "phonetic rendering of the sound", "description": "brief explanation", "slug": "short_snake_case_english_name"}}]
+"""
 
 genai = None
 types = None
@@ -43,216 +42,413 @@ def _init_deps():
         types = _types
 
 
-def _diarize_schema(timestamps=False):
-    _init_deps()
-    item_props = {
-        "speaker": types.Schema(type=types.Type.STRING),
-        "timestamp": types.Schema(type=types.Type.STRING),
-        "content": types.Schema(type=types.Type.STRING),
-    }
-    required = ["speaker", "timestamp", "content"] if timestamps else ["speaker", "content"]
-    desc = "List of transcribed segments with timestamps." if timestamps else "List of transcribed segments."
-    return types.Schema(
-        type=types.Type.OBJECT,
-        properties={
-            "summary": types.Schema(
-                type=types.Type.STRING,
-                description="A concise summary of the audio content.",
-            ),
-            "segments": types.Schema(
-                type=types.Type.ARRAY,
-                description=desc,
-                items=types.Schema(
-                    type=types.Type.OBJECT,
-                    properties=item_props,
-                    required=required,
-                ),
-            ),
-        },
-        required=["summary", "segments"],
+def _die(msg):
+    print(f"error: {msg}", file=sys.stderr)
+    sys.exit(1)
+
+
+def _log(msg):
+    print(msg, file=sys.stderr)
+
+
+def _ffprobe_duration(path):
+    out = subprocess.check_output(
+        [
+            "ffprobe", "-v", "error", "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1", str(path),
+        ]
     )
+    return float(out.decode().strip())
 
 
-def default_prompt(args):
-    if args.diarize and args.timestamps:
-        return PROMPT_DIARIZE_TS
-    if args.diarize:
-        return PROMPT_DIARIZE
-    if args.timestamps:
-        return PROMPT_TRANSCRIBE_TS
-    return PROMPT_TRANSCRIBE
+def _has_video(path):
+    out = subprocess.check_output(
+        [
+            "ffprobe", "-v", "error", "-select_streams", "v:0",
+            "-show_entries", "stream=codec_type", "-of", "csv=p=0", str(path),
+        ]
+    )
+    return bool(out.strip())
 
 
-def build_config(args):
-    _init_deps()
-    kwargs = {
-        "automatic_function_calling": types.AutomaticFunctionCallingConfig(
-            disable=True
+def _make_chunks(src, tmp, chunk_secs):
+    total = _ffprobe_duration(src)
+    chunks = []
+    start = 0.0
+    i = 1
+    while start < total:
+        end = min(start + chunk_secs, total)
+        out = Path(tmp) / f"part_{i}.mp3"
+        subprocess.run(
+            [
+                "ffmpeg", "-v", "error", "-ss", str(start), "-to", str(end), "-i", str(src),
+                "-vn", "-ac", "1", "-ar", "16000", "-b:a", "64k", str(out), "-y",
+            ],
+            check=True,
         )
+        chunks.append({"index": i, "path": out, "offset": start, "length": end - start})
+        start = end
+        i += 1
+    return total, chunks
+
+
+def _parse_offset(val):
+    return float(str(val).rstrip("s")) if val else 0.0
+
+
+def _parse_mmss(val):
+    parts = [float(x) for x in str(val).strip().split(":")]
+    secs = 0.0
+    for p in parts:
+        secs = secs * 60 + p
+    return secs
+
+
+def _fmt_ts(seconds):
+    h, rem = divmod(seconds, 3600)
+    m, s = divmod(rem, 60)
+    base = f"{int(m):02d}:{s:04.1f}"
+    return f"{int(h)}:{base}" if h else base
+
+
+def _extract_words(interaction):
+    words = []
+    for step in getattr(interaction, "steps", []) or []:
+        for content in getattr(step, "content", []) or []:
+            for a in getattr(content, "annotations", []) or []:
+                if getattr(a, "type", None) == "word_info":
+                    words.append(
+                        {
+                            "text": getattr(a, "text", ""),
+                            "speaker": getattr(a, "speaker", None) or "unknown",
+                            "start": _parse_offset(getattr(a, "start_offset", None)),
+                            "end": _parse_offset(getattr(a, "end_offset", None)),
+                        }
+                    )
+    return words
+
+
+def _clean_words(raw, chunk):
+    out = []
+    for w in raw:
+        st, en = w["start"], w["end"]
+        if en < st:
+            en = st + 0.3
+        if en - st > 5.0:
+            en = st + 0.5
+        if st > chunk["length"] + 2.0:
+            continue
+        en = min(chunk["length"], en)
+        out.append(
+            {
+                "text": w["text"],
+                "speaker": w["speaker"],
+                "chunk": chunk["index"],
+                "start": round(st + chunk["offset"], 2),
+                "end": round(en + chunk["offset"], 2),
+            }
+        )
+    out.sort(key=lambda w: w["start"])
+    return out
+
+
+def _group_segments(words, gap):
+    segs = []
+    cur = None
+    for w in words:
+        same = (
+            cur
+            and w["speaker"] == cur["speaker"]
+            and w["chunk"] == cur["chunk"]
+            and -0.2 <= w["start"] - cur["end"] <= gap
+        )
+        if same:
+            cur["end"] = max(cur["end"], w["end"])
+            cur["words"].append(w["text"])
+        else:
+            if cur:
+                segs.append(cur)
+            cur = {
+                "speaker": w["speaker"],
+                "chunk": w["chunk"],
+                "start": w["start"],
+                "end": w["end"],
+                "words": [w["text"]],
+            }
+    if cur:
+        segs.append(cur)
+    return [
+        {
+            "speaker": s["speaker"],
+            "chunk": s["chunk"],
+            "start": s["start"],
+            "end": s["end"],
+            "duration": round(s["end"] - s["start"], 2),
+            "text": " ".join(s["words"]).strip(),
+        }
+        for s in segs
+    ]
+
+
+def _transcription_config(args):
+    cfg = {}
+    if args.lang:
+        cfg["language_codes"] = [args.lang]
+    if args.smart:
+        cfg["mode"] = "smart"
+    else:
+        mode = {"type": "verbatim"}
+        if args.diarize:
+            mode["diarization_mode"] = "speaker"
+        if args.timestamps:
+            mode["timestamp_granularities"] = ["word"]
+        cfg["mode"] = mode
+    return cfg
+
+
+def _upload(client, path):
+    return client.files.upload(file=str(path))
+
+
+def _delete(client, f):
+    try:
+        client.files.delete(name=f.name)
+    except Exception as e:
+        _log(f"warning: could not delete {f.name}: {e}")
+
+
+def _json_from_text(text):
+    text = (text or "").strip()
+    m = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", text)
+    if m:
+        text = m.group(1)
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return []
+    return data if isinstance(data, list) else []
+
+
+def _resolve_input(args):
+    src = Path(args.input)
+    if not src.is_file():
+        _die(f"input not found: {src}")
+    if not os.environ.get("GEMINI_API_KEY"):
+        _die("GEMINI_API_KEY env var required")
+    for tool in ("ffmpeg", "ffprobe"):
+        if subprocess.run(["which", tool], capture_output=True).returncode:
+            _die(f"{tool} not found in PATH")
+    out = Path(args.output_dir) / src.stem
+    out.mkdir(parents=True, exist_ok=True)
+    return src, out
+
+
+def run_transcribe(args):
+    if args.smart:
+        args.diarize = args.timestamps = False
+    src, out = _resolve_input(args)
+    _init_deps()
+    client = genai.Client()
+    config = _transcription_config(args)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        total, chunks = _make_chunks(src, tmp, args.chunk)
+        _log(f"{src.name}: {total:.1f}s in {len(chunks)} chunk(s)")
+
+        words, texts = [], []
+        for c in chunks:
+            _log(f"chunk {c['index']}/{len(chunks)}: uploading")
+            f = _upload(client, c["path"])
+            try:
+                _log(f"chunk {c['index']}/{len(chunks)}: transcribing")
+                interaction = client.interactions.create(
+                    model=GEMINI_TRANSCRIBE,
+                    input=[{"type": "audio", "uri": f.uri, "mime_type": f.mime_type}],
+                    generation_config={"transcription_config": config},
+                )
+            finally:
+                _delete(client, f)
+            texts.append(interaction.output_text or "")
+            words.extend(_clean_words(_extract_words(interaction), c))
+
+    segments = _group_segments(words, args.gap) if words else []
+    result = {
+        "source": src.name,
+        "duration": round(total, 2),
+        "chunk_secs": args.chunk,
+        "config": config,
+        "segments": segments,
+        "words": words,
+        "text": "\n\n".join(t.strip() for t in texts if t.strip()),
     }
-    if args.diarize:
-        kwargs["response_mime_type"] = "application/json"
-        kwargs["response_schema"] = _diarize_schema(args.timestamps)
-    return types.GenerateContentConfig(**kwargs)
+    (out / "transcript.json").write_text(json.dumps(result, ensure_ascii=False, indent=2))
+
+    if segments:
+        lines = []
+        for s in segments:
+            spk = f" {s['speaker']}" if args.diarize else ""
+            lines.append(f"[{_fmt_ts(s['start'])}]{spk}: {s['text']}")
+        txt = "\n".join(lines)
+    else:
+        txt = result["text"]
+    (out / "transcript.txt").write_text(txt)
+    print(txt)
+    _log(f"\nsaved: {out / 'transcript.json'}, {out / 'transcript.txt'}")
 
 
-def build_contents(prompt, audio_paths, youtube_urls):
-    contents = []
-
-    for p in audio_paths:
-        with open(p, "rb") as f:
-            data = f.read()
-        mime = _mime_type(p)
-        contents.append(types.Part.from_bytes(data=data, mime_type=mime))
-
-    for url in youtube_urls:
-        contents.append(types.Part(file_data=types.FileData(file_uri=url)))
-
-    contents.append(prompt)
-    return contents
-
-
-def build_contents_uploaded(prompt, uploaded_files, youtube_urls):
-    contents = []
-
-    for f in uploaded_files:
-        contents.append(f)
-
-    for url in youtube_urls:
-        contents.append(types.Part(file_data=types.FileData(file_uri=url)))
-
-    contents.append(prompt)
-    return contents
-
-
-def _mime_type(path):
-    ext = Path(path).suffix.lower()
-    return {
-        ".wav": "audio/wav",
-        ".mp3": "audio/mp3",
-        ".aiff": "audio/aiff",
-        ".aac": "audio/aac",
-        ".ogg": "audio/ogg",
-        ".flac": "audio/flac",
-    }.get(ext, "audio/mpeg")
+def _detect_sounds(client, model, chunk, prompt):
+    f = _upload(client, chunk["path"])
+    try:
+        resp = client.models.generate_content(
+            model=model,
+            contents=[f, prompt],
+            config=types.GenerateContentConfig(
+                automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True)
+            ),
+        )
+    finally:
+        _delete(client, f)
+    found = []
+    for s in _json_from_text(resp.text):
+        try:
+            st = _parse_mmss(s["start"])
+            en = _parse_mmss(s["end"])
+        except (KeyError, ValueError):
+            continue
+        if not 0 <= st < en <= chunk["length"] + 1.0:
+            continue
+        found.append(
+            {
+                "start": round(st + chunk["offset"], 1),
+                "end": round(en + chunk["offset"], 1),
+                "sound": s.get("sound", ""),
+                "description": s.get("description", ""),
+                "slug": s.get("slug", "sound"),
+            }
+        )
+    return found
 
 
-def _file_size(paths):
-    return sum(os.path.getsize(p) for p in paths)
+def _slug(s):
+    s = re.sub(r"[^a-z0-9_]+", "", str(s).lower().replace(" ", "_")).strip("_")
+    return s or "sound"
 
 
-def format_diarize(data):
-    lines = []
-    if data.get("summary"):
-        lines.append(f"Summary: {data['summary']}")
-        lines.append("")
-    for seg in data.get("segments", []):
-        speaker = seg.get("speaker", "Unknown")
-        ts = seg.get("timestamp", "")
-        prefix = f"[{ts}] {speaker}" if ts else speaker
-        lines.append(f"{prefix}: {seg['content']}")
-    return "\n".join(lines)
+def _cut(src, dest_dir, items, total, pad, with_video):
+    for i, it in enumerate(items, 1):
+        name = f"sample_{i:02d}_{_slug(it['slug'])}"
+        start = max(0.0, it["start"] - pad)
+        end = min(total, it["end"] + pad)
+        dur = round(end - start, 2)
+        base = ["ffmpeg", "-v", "error", "-ss", str(start), "-t", str(dur), "-i", str(src)]
+        mp3 = dest_dir / f"{name}.mp3"
+        subprocess.run(base + ["-vn", "-b:a", "192k", str(mp3), "-y"], check=True)
+        it["id"] = name
+        it["cut_start"] = round(start, 2)
+        it["cut_end"] = round(end, 2)
+        it["audio"] = str(mp3)
+        if with_video:
+            mp4 = dest_dir / f"{name}.mp4"
+            subprocess.run(
+                base + ["-c:v", "libx264", "-c:a", "aac", "-crf", "22", str(mp4), "-y"],
+                check=True,
+            )
+            it["video"] = str(mp4)
 
 
-def register(subparsers):
-    p = subparsers.add_parser(
-        "audioscope", help="transcribe and diarize audio via Gemini"
-    )
+def run_sounds(args):
+    src, out = _resolve_input(args)
+    _init_deps()
+    client = genai.Client()
+    model = MODELS[args.model]
+    context = f"Context: {args.context}\n" if args.context else ""
+    prompt = PROMPT_SOUNDS.format(like=args.like, context=context)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        total, chunks = _make_chunks(src, tmp, args.chunk)
+        _log(f"{src.name}: {total:.1f}s in {len(chunks)} chunk(s)")
+        found = []
+        for c in chunks:
+            _log(f"chunk {c['index']}/{len(chunks)}: scanning")
+            found.extend(_detect_sounds(client, model, c, prompt))
+
+    picked = sorted(found, key=lambda x: x["start"])
+    for it in picked:
+        it["start_ts"] = _fmt_ts(it["start"])
+        it["end_ts"] = _fmt_ts(it["end"])
+
+    if args.extract and picked:
+        sdir = out / "sounds"
+        sdir.mkdir(exist_ok=True)
+        _cut(src, sdir, picked, total, args.pad, _has_video(src))
+
+    result = {
+        "source": src.name,
+        "duration": round(total, 2),
+        "like": args.like,
+        "sounds": picked,
+    }
+    (out / "sounds.json").write_text(json.dumps(result, ensure_ascii=False, indent=2))
+
+    if not picked:
+        print("no matching sounds found")
+    for it in picked:
+        print(f"[{it['start_ts']} - {it['end_ts']}] {it['sound']} - {it['description']}")
+        if "audio" in it:
+            print(f"    {it['audio']}" + (f"  {it['video']}" if "video" in it else ""))
+    _log(f"\nsaved: {out / 'sounds.json'}")
+
+
+def _add_common(p):
+    p.add_argument("input", metavar="FILE", help="audio or video file")
     p.add_argument(
-        "prompt",
-        nargs="?",
-        default=None,
-        help="custom prompt (default: auto-selected based on flags)",
-    )
-    p.add_argument(
-        "--audio",
-        action="append",
-        default=[],
-        metavar="FILE",
-        help="input audio file (repeatable)",
-    )
-    p.add_argument(
-        "--youtube",
-        action="append",
-        default=[],
-        metavar="URL",
-        help="YouTube URL (repeatable)",
-    )
-    p.add_argument(
-        "--model",
-        choices=list(MODELS.keys()),
-        default="flash",
-        help="model to use (default: flash)",
-    )
-    p.add_argument(
-        "--diarize",
-        action="store_true",
-        help="speaker diarization mode (structured JSON)",
-    )
-    p.add_argument(
-        "--timestamps",
-        action="store_true",
-        help="include MM:SS timestamps in output",
+        "--chunk",
+        type=float,
+        default=1600.0,
+        metavar="SECS",
+        help="chunk length in seconds (default: 1600, under the 30 min diarization limit)",
     )
     p.add_argument(
         "--output-dir",
         default="./output",
-        help="output directory for saving results (default: ./output)",
-    )
-    p.set_defaults(func=run)
-
-
-UPLOAD_THRESHOLD = 15 * 1024 * 1024  # 15 MB — leave room for prompt overhead
-
-
-def run(args):
-    if not args.audio and not args.youtube:
-        print("error: at least one --audio or --youtube required", file=sys.stderr)
-        sys.exit(1)
-
-    for p in args.audio:
-        if not os.path.isfile(p):
-            print(f"error: audio file not found: {p}", file=sys.stderr)
-            sys.exit(1)
-
-    if not os.environ.get("GEMINI_API_KEY"):
-        print("error: GEMINI_API_KEY env var required", file=sys.stderr)
-        sys.exit(1)
-
-    _init_deps()
-
-    prompt = args.prompt or default_prompt(args)
-    client = genai.Client()
-    model = MODELS[args.model]
-    config = build_config(args)
-
-    if args.audio and _file_size(args.audio) > UPLOAD_THRESHOLD:
-        uploaded = []
-        for p in args.audio:
-            print(f"uploading {p}...", file=sys.stderr)
-            uploaded.append(client.files.upload(file=p))
-        contents = build_contents_uploaded(prompt, uploaded, args.youtube)
-    else:
-        contents = build_contents(prompt, args.audio, args.youtube)
-
-    response = client.models.generate_content(
-        model=model,
-        contents=contents,
-        config=config,
+        help="results go to <output-dir>/<file stem>/ (default: ./output)",
     )
 
-    output_dir = Path(args.output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-    if args.diarize:
-        data = json.loads(response.text)
-        json_path = output_dir / f"audioscope_{ts}.json"
-        json_path.write_text(json.dumps(data, indent=2, ensure_ascii=False))
-        print(format_diarize(data))
-        print(f"\nsaved: {json_path}", file=sys.stderr)
-    else:
-        txt_path = output_dir / f"audioscope_{ts}.txt"
-        txt_path.write_text(response.text)
-        print(response.text)
-        print(f"\nsaved: {txt_path}", file=sys.stderr)
+def register(subparsers):
+    p = subparsers.add_parser(
+        "audioscope", help="transcribe speech / find and extract non-verbal sounds"
+    )
+    modes = p.add_subparsers(dest="mode", required=True)
+
+    t = modes.add_parser(
+        "transcribe", help="verbatim transcript with speaker diarization and word timestamps"
+    )
+    _add_common(t)
+    t.add_argument("--lang", metavar="BCP47", help="language hint, e.g. ru-RU (default: auto)")
+    t.add_argument("--no-diarize", dest="diarize", action="store_false", help="skip speaker labels")
+    t.add_argument("--no-timestamps", dest="timestamps", action="store_false", help="skip word timestamps")
+    t.add_argument(
+        "--smart",
+        action="store_true",
+        help="smart mode: cleaned-up plain text (implies no diarization/timestamps)",
+    )
+    t.add_argument(
+        "--gap",
+        type=float,
+        default=1.2,
+        metavar="SECS",
+        help="max silence between words of one segment (default: 1.2)",
+    )
+    t.set_defaults(func=run_transcribe)
+
+    s = modes.add_parser(
+        "sounds", help="find non-verbal sounds matching a description, optionally cut them out"
+    )
+    _add_common(s)
+    s.add_argument("--like", default=DEFAULT_LIKE, help="what kind of sound to look for")
+    s.add_argument("--context", help="extra context for the model (who is speaking, what show)")
+    s.add_argument("--extract", action="store_true", help="cut audio (and video, if any) samples with ffmpeg")
+    s.add_argument("--pad", type=float, default=0.5, help="seconds of padding around each cut (default: 0.5)")
+    s.add_argument("--model", choices=list(MODELS), default="flash", help="detection model (default: flash)")
+    s.set_defaults(func=run_sounds)

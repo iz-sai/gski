@@ -8,6 +8,7 @@ Pip-installable Python package. Bundles skill scripts (CLI tools) and their Open
 gski/
 ├── pyproject.toml
 └── gski/
+    ├── audioscope.py       # gski audioscope — transcribe (diarized) / sounds (find & cut non-verbal sounds)
     ├── cli.py              # entry point: gski <command>
     ├── deepresearch.py     # gski deepresearch — Gemini Deep Research agent (async jobs)
     ├── gptimage2.py        # gski gptimage2 — OpenAI GPT Image gen/edit
@@ -24,6 +25,8 @@ gski/
     ├── youtube_scope.py    # gski youtube-scope — YouTube data extraction via yt-dlp
     ├── setup.py            # gski setup <dir> — copy SKILL.md files
     └── skills/
+        ├── audioscope/
+        │   └── SKILL.md
         ├── deepresearch/
         │   └── SKILL.md
         ├── gptimage2/
@@ -53,6 +56,8 @@ gski/
 ## CLI
 
 ```
+gski audioscope transcribe FILE [--lang BCP47] [--no-diarize] [--no-timestamps] [--smart] [--gap S] [--chunk S] [--output-dir DIR]
+gski audioscope sounds FILE [--like TEXT] [--context TEXT] [--extract] [--pad S] [--model flash|pro] [--chunk S] [--output-dir DIR]
 gski gptimage2 "prompt" [--image FILE]... [--mask FILE] [--model gpt-image-2.5-flare|...] [--size WxH|auto] [--quality high|low|medium|xhigh|max|auto] [--format jpg|png|webp] [--compression N] [--background auto|opaque|transparent] [-n N] [--output-dir DIR]
 gski llm-process "prompt" --file FILE [--file FILE]... [--model flash|pro] [--system TEXT] [--json] [--no-think]
 gski nanobanana "prompt" [--image FILE]... [--model flash3|flash2] [--aspect-ratio RATIO] [--size 1K|2K|4K] [--search] [--output-dir DIR]
@@ -95,6 +100,7 @@ gski setup <target-dir>
 - Requires `OPENAI_API_KEY` env var for gptimage2
 - Requires `ELEVENLABS_API_KEY` env var for voiceover (accepts `ELEVEN_LABS_API_KEY`)
 - Requires `yt-dlp` for youtube-scope
+- Requires `ffmpeg`/`ffprobe` for audioscope
 - Vertex backend (`gski omni --backend vertex`) reads a service account json from `~/.config/gski/gemcred.json`
 
 ## Install

@@ -4,6 +4,8 @@ GEMINI_TEXT = {
     "pro": "gemini-3.1-pro-preview"
 }
 
+GEMINI_TRANSCRIBE = "gemini-3.5-transcribe"
+
 GEMINI_IMAGE = {
     "flash2": "gemini-2.5-flash-image",
     "flash3": "gemini-3.1-flash-image-preview",
@@ -20,7 +22,7 @@ GEMINI_OMNI = {
 }
 
 GEMINI_OMNI_VERTEX = {
-    "flash": "gemini-omni-flash-preview",
+    "flash": "gemini-omni-1.1-flash-preview",
 }
 
 OPENAI_IMAGE = [
