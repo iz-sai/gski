@@ -27,6 +27,7 @@ def main():
     sub = parser.add_subparsers(dest="command")
 
     from gski.audioscope import register as as_register
+    from gski.blender import register as blender_register
     from gski.deepresearch import register as dr_register
     from gski.gptimage2 import register as gi_register
     from gski.llm_process import register as lp_register
@@ -42,6 +43,7 @@ def main():
     from gski.youtube_scope import register as ys_register
 
     as_register(sub)
+    blender_register(sub)
     dr_register(sub)
     gi_register(sub)
     lp_register(sub)
