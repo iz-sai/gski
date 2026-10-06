@@ -10,7 +10,7 @@ from pathlib import Path
 API_BASE = "https://api.elevenlabs.io/v1"
 
 MODELS = {
-    "v3": "eleven_v3",
+    "v4": "eleven_v4",
     "multilingual": "eleven_multilingual_v2",
     "flash": "eleven_flash_v2_5",
 }
@@ -67,7 +67,7 @@ def register(subparsers):
         aliases=["tts"],
         help="text-to-speech voiceover via ElevenLabs",
     )
-    p.add_argument("text", nargs="?", help="text to synthesize (v3 audio tags allowed)")
+    p.add_argument("text", nargs="?", help="text to synthesize (v4 audio tags allowed)")
     p.add_argument(
         "--voice",
         default=DEFAULT_VOICE,
@@ -76,8 +76,8 @@ def register(subparsers):
     p.add_argument(
         "--model",
         choices=list(MODELS.keys()),
-        default="v3",
-        help="model: v3 (expressive), multilingual (stable), flash (fast/cheap) (default: v3)",
+        default="v4",
+        help="model: v4 (expressive), multilingual (stable), flash (fast/cheap) (default: v4)",
     )
     p.add_argument("--stability", type=float, default=0.1, help="0-1, lower = more expressive (default: 0.1)")
     p.add_argument("--style", type=float, default=1.0, help="0-1, style exaggeration (default: 1.0)")

@@ -77,7 +77,7 @@ gski ocq dash [--port 4097]   # read-only web dashboard; projects registry in ~/
 gski tgscope info|search|show <export-dir-or-result.json> ...
   search "query" [--regex] [--case-sensitive] [--since YYYY-MM-DD] [--until YYYY-MM-DD] [--media KIND] [--min-reactions N] [--limit N] [--width N] [--json]
   show <ids> [--context N] [--json]   # ids: 12 | 12,15 | 10-20
-gski voiceover "text" [--voice NAME_OR_ID] [--model v3|multilingual|flash] [--stability N] [--style N] [--similarity N] [--speed N] [--no-speaker-boost] [--format FMT] [-o FILE] [--output-dir DIR] [--list-voices]
+gski voiceover "text" [--voice NAME_OR_ID] [--model v4|multilingual|flash] [--stability N] [--style N] [--similarity N] [--speed N] [--no-speaker-boost] [--format FMT] [-o FILE] [--output-dir DIR] [--list-voices]
 gski websearch "query" [--model flash|flash-lite] [--raw]
 gski youtube-scope <target> [--comments] [--transcript] [--limit N] [--archive FILE] [--audio] [--video] [--res N] [--audio-quality N] [--output-dir DIR] [--update]
 gski deepresearch start "query" [--file F]... [--max] [--plan] [--output FILE] [--wait]
