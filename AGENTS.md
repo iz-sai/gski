@@ -23,7 +23,7 @@ gski/
     ├── voiceover.py        # gski voiceover — ElevenLabs text-to-speech
     ├── websearch.py        # gski websearch — web search via Gemini grounding
     ├── youtube_scope.py    # gski youtube-scope — YouTube data extraction via yt-dlp
-    ├── setup.py            # gski setup <dir> — copy SKILL.md files
+    ├── setup.py            # gski setup <dir> — symlink skill folders (or --copy)
     └── skills/
         ├── audioscope/
         │   └── SKILL.md
@@ -60,7 +60,7 @@ gski audioscope transcribe FILE [--lang BCP47] [--no-diarize] [--no-timestamps] 
 gski audioscope sounds FILE [--like TEXT] [--context TEXT] [--extract] [--pad S] [--model flash|pro] [--chunk S] [--output-dir DIR]
 gski gptimage2 "prompt" [--image FILE]... [--mask FILE] [--model gpt-image-2.5-flare|...] [--size WxH|auto] [--quality high|low|medium|xhigh|max|auto] [--format jpg|png|webp] [--compression N] [--background auto|opaque|transparent] [-n N] [--output-dir DIR]
 gski llm-process "prompt" --file FILE [--file FILE]... [--model flash|pro] [--system TEXT] [--json] [--no-think]
-gski nanobanana "prompt" [--image FILE]... [--model flash3|flash2] [--aspect-ratio RATIO] [--size 1K|2K|4K] [--search] [--output-dir DIR]
+gski nanobanana "prompt" [--image FILE]... [--model banana2.1] [--aspect-ratio RATIO] [--size 1K|2K|4K] [--search] [--output-dir DIR]
 gski nanoscope "prompt" --image FILE [--url URL]... [--model flash|pro] [--detect] [--segment] [--output-dir DIR]
 gski omni generate "prompt" [--image FILE]... [--video FILE]... [--aspect-ratio 16:9|9:16] [--resolution 360p|720p|1080p|4k] [--task text_to_video|image_to_video|reference_to_video|edit|extend] [--backend api|vertex] [--output FILE] [--async]
 gski omni edit <job-id> "prompt" [--image FILE]... [--video FILE]... [--aspect-ratio 16:9|9:16] [--resolution 360p|720p|1080p|4k] [--output FILE] [--async]
@@ -82,7 +82,7 @@ gski websearch "query" [--model flash|flash-lite] [--raw]
 gski youtube-scope <target> [--comments] [--transcript] [--limit N] [--archive FILE] [--audio] [--video] [--res N] [--audio-quality N] [--output-dir DIR] [--update]
 gski deepresearch start "query" [--file F]... [--max] [--plan] [--output FILE] [--wait]
 gski deepresearch list|status|wait|show|refine|approve|rm ...
-gski setup <target-dir>
+gski setup <target-dir> [--copy]
 ```
 
 ## Adding a new skill
