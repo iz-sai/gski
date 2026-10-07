@@ -7,9 +7,8 @@ GEMINI_TEXT = {
 GEMINI_TRANSCRIBE = "gemini-3.5-transcribe"
 
 GEMINI_IMAGE = {
-    "flash2": "gemini-2.5-flash-image",
-    "flash3": "gemini-3.1-flash-image-preview",
-    "pro": "gemini-3-pro-image-preview",
+    "banana2.1": "gemini-nano-banana-2.1",
+    "gemini-nano-banana-2.1": "gemini-nano-banana-2.1",
 }
 
 GEMINI_DEEP_RESEARCH = {

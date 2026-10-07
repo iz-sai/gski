@@ -32,3 +32,5 @@ Use `bpy` for geometry, named collections, keyframes and camera rigs. The user i
 - Solid viewport shading (`space.shading`) and Workbench render shading (`scene.display.shading`) are separate. Configure both. Use material diffuse colors plus `color_type='MATERIAL'`, studio light, cavity and shadows for readable clay references. Wire display and alpha do not guarantee transparent renders.
 - Blender uses Z-up. Explicitly choose scene scale and coordinate conversions. Keep previews lightweight; use 768–960px frames. Do not promise fixed rendering speed. Benchmark before long exports; use a separate background process with inherited two-CPU affinity and low priority, not a long live-UI command.
 - Save via `Ctrl+S` when agreed. `F3 → Revert` discards unsaved changes; it is unnecessary for live patches. The open scene is the source of truth during manual review.
+- UI shortcuts: `~` camera/pie, `Space` play/pause, `N` sidebar/transforms, `G` move (`G,Z,Z` dolly), `I` keyframe, `Alt+I`/`X` delete key, `Shift+S` snap, `Shift+Tab` magnet, `F3` search. Detailed notes: `docs/blender-hints.md`.
+

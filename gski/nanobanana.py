@@ -6,6 +6,20 @@ from pathlib import Path
 
 from .models import GEMINI_IMAGE as MODELS
 
+PROHIBITED_MODELS = {
+    "flash",
+    "flash2",
+    "flash3",
+    "pro",
+    "lite",
+    "gemini-2.5-flash-image",
+    "gemini-3.1-flash-image",
+    "gemini-3.1-flash-image-preview",
+    "gemini-3-pro-image",
+    "gemini-3-pro-image-preview",
+    "gemini-3.1-flash-lite-image",
+}
+
 ASPECT_RATIOS = [
     "1:1",
     "2:3",
@@ -44,13 +58,10 @@ def build_config(args):
         )
     }
 
-    if args.model == "pro":
-        kwargs["response_modalities"] = ["TEXT", "IMAGE"]
-
     image_config_kwargs = {}
     if args.aspect_ratio:
         image_config_kwargs["aspect_ratio"] = args.aspect_ratio
-    if args.size and args.model in ("pro", "flash3"):
+    if args.size:
         image_config_kwargs["image_size"] = args.size
 
     if image_config_kwargs:
@@ -129,9 +140,8 @@ def register(subparsers):
     )
     p.add_argument(
         "--model",
-        choices=list(MODELS.keys()),
-        default="flash3",
-        help="model to use (default: flash3)",
+        default="banana2.1",
+        help="model to use (default: banana2.1)",
     )
     p.add_argument(
         "--aspect-ratio",
@@ -143,7 +153,7 @@ def register(subparsers):
         "--size",
         choices=SIZES,
         metavar="SIZE",
-        help="output resolution (pro/flash3): 1K, 2K, 4K",
+        help="output resolution: 1K, 2K, 4K (default: 1K)",
     )
     p.add_argument(
         "--search", action="store_true", help="enable Google Search grounding"
@@ -169,8 +179,18 @@ def register(subparsers):
 
 
 def run(args):
-    if args.size and args.model not in ("pro", "flash3"):
-        print("error: --size requires --model pro or flash3", file=sys.stderr)
+    if args.model in PROHIBITED_MODELS:
+        print(
+            f"error: model '{args.model}' is prohibited. Use Nano Banana 2.1 ('banana2.1').",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    if args.model not in MODELS:
+        print(
+            f"error: unknown model '{args.model}'. Allowed: {', '.join(MODELS.keys())}",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     for p in args.image:

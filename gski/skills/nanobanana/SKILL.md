@@ -7,7 +7,7 @@ description: Generate, edit, and understand images. Default skill for image gene
 
 `gski nanobanana` calls the Gemini API directly for image generation and editing. Output lands in `./nanobanana-output/`. Run from the directory where output should be saved.
 
-Default model is `gemini-3.1-flash-image-preview` (`flash3`). Always use the default Flash 3 model. Do not use `--model pro`.
+Default model is `gemini-nano-banana-2.1` (`banana2.1`). Always use the default model `banana2.1`. Usage of older models (`flash3`, `flash2`, `pro`, `gemini-3.1-flash-image`, `gemini-2.5-flash-image`, `gemini-3-pro-image`, `gemini-3.1-flash-lite-image`) is strictly prohibited. Do not pass `--model flash3`, `--model flash2`, `--model pro`, or request earlier generation models.
 
 ## Commands
 
@@ -21,13 +21,40 @@ gski nanobanana "prompt" --image a.png --image b.png    # multi-image compositio
 
 | Flag | Values | Default | Notes |
 |------|--------|---------|-------|
-| `--image FILE` | repeatable | none | input image(s) for editing |
-| `--model` | `flash3`, `flash2` | `flash3` | default: flash3. Always use default Flash 3, do not use pro |
+| `--image FILE` | repeatable | none | input image(s) for editing (up to 14 reference images) |
+| `--model` | `banana2.1` | `banana2.1` | default: banana2.1 (`gemini-nano-banana-2.1`). Older models (flash3, flash2, pro) are prohibited |
 | `--aspect-ratio` | `1:1`,`2:3`,`3:2`,`3:4`,`4:3`,`4:5`,`5:4`,`9:16`,`16:9`,`21:9` | auto | output aspect ratio |
-| `--size` | `1K`,`2K`,`4K` | `1K` | resolution (pro model only) |
-| `--search` | flag | off | enable Google Search grounding |
-| `--output-dir` | path | `./gski nanobanana-output` | where to save output |
+| `--size` | `1K`,`2K`,`4K` | `1K` | output resolution: 1K, 2K, 4K |
+| `--search` | flag | off | enable Google Search grounding (web & image search) |
+| `--output-dir` | path | `./output` | where to save output |
 | `-o`, `--output` | path | none | exact output file path; overrides `--output-dir` and auto-naming |
+
+## Prompting guide
+
+### 1. Structure and visual details
+- **Natural language over tags**: Avoid empty keywords ("8k, photorealistic, masterpiece"). Describe concrete scene attributes: subject, action/pose, environment, lighting, camera angle, and lens (e.g. `wide-angle shot`, `low perspective`, `50mm lens`, `soft natural light`).
+- **Templates**:
+  - Photorealistic: `A [type of shot] of [subject] in [setting]. [Lighting description]. Shot from [camera angle] with [lens type].`
+  - Stylized/Sticker: `A [style] sticker/illustration of [subject] [doing action]. Bold clean outlines, simple cel-shading, vibrant colors, solid white background.`
+
+### 2. Exact text rendering
+- Put target wording in quotes: `"The Daily Grind"`.
+- Descriptively specify typography, weight, color, and layout: `clean, bold, sans-serif font in black and white, centered`.
+- Explicitly state exclusions if needed: `No other text, no extra logos`.
+
+### 3. Semantic inpainting (edits without masks)
+- Gemini does not use separate binary mask files. Use conversational semantic masking:
+  `Using the provided image, change ONLY [specific element] to [new description]. Keep everything else in the image exactly the same, preserving original style, lighting, and composition.`
+
+### 4. Multi-image composition (up to 14 references)
+- Supports up to 10 object fidelity references and up to 4 character consistency references.
+- Refer to inputs by order or role:
+  `Take the blue floral dress from the first image and have the woman from the second image wear it. Adjust lighting and shadows to match.`
+- For character consistency across angles: feed the previous output and specify the new angle (`studio portrait of this character, in profile looking right, white background`).
+
+### 5. Grounding with Search
+- Pass `--search` to ground generation with Google Search (web and image retrieval).
+- Use for real-time factual diagrams (weather, stocks, news) or accurate visual references: `Use search to find accurate images of a resplendent quetzal bird. Create a 3:2 wallpaper...`
 
 ## Examples
 
