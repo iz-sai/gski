@@ -66,11 +66,11 @@ gski omni generate "prompt" [--image FILE]... [--video FILE]... [--aspect-ratio 
 gski omni edit <job-id> "prompt" [--image FILE]... [--video FILE]... [--aspect-ratio 16:9|9:16] [--resolution 360p|720p|1080p|4k] [--output FILE] [--async]
 gski omni extend <job-id> ["prompt"] [--image FILE]... [--video FILE]... [--output FILE] [--async]
 gski omni list|status|wait|show|rm ...
-gski ocq serve [--port 4096]
+gski ocq serve [--port 4096]   # optional; default is the opencode v2 background service
 gski ocq init RUN [--agent A] [--model provider/model] [--variant V] [--concurrency N]
 gski ocq add RUN ["task"]... [--file F|-] [--deps IDS]
 gski ocq ls | ledger RUN [--status S...] [--all]
-gski ocq spawn RUN [ID...] [--allow 'perm:pattern']... [--agent A] [--model M] [--variant V]
+gski ocq spawn RUN [ID...] [--allow 'action:pattern']... [--agent A] [--model M] [--variant V]
 gski ocq wait-any RUN [--timeout S] | result RUN ID
 gski ocq done|fail RUN ID... [--note] | retry RUN ID... [--feedback] | abort RUN [ID...]
 gski ocq dash [--port 4097]   # read-only web dashboard; projects registry in ~/.local/state/ocq/projects

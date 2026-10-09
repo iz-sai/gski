@@ -8,9 +8,15 @@ from gski.ocq_lib.api import (
     BASE_RULES,
     DEFAULT_CFG,
     DEFAULT_PORT,
-    api,
+    active,
+    assistants,
+    create_session,
     err_text,
+    interrupt,
     last_text,
+    messages,
+    send_prompt,
+    session_info,
     sweep,
 )
 from gski.ocq_lib.ledger import (
@@ -33,9 +39,10 @@ from gski.ocq_lib.ledger import (
 
 
 def report(rd, cfg, t):
-    msgs = api("GET", f"/session/{t['session']}/message", directory=cfg["dir"]) or []
-    assistants = [m for m in msgs if m["info"]["role"] == "assistant"]
-    last = assistants[-1]["info"] if assistants else None
+    msgs = messages(t["session"])
+    asst = assistants(msgs)
+    last = asst[0] if asst else None
+    info = session_info(t["session"])
     if not last:
         if time.time() - t.get("started", 0) < 120:
             return None
@@ -44,6 +51,8 @@ def report(rd, cfg, t):
         err = err_text(last["error"])
     elif not last.get("time", {}).get("completed"):
         return None
+    elif info.get("outcome") in ("failed", "interrupted"):
+        err = f"session {info['outcome']}"
     else:
         err = None
 
@@ -59,14 +68,15 @@ def report(rd, cfg, t):
     if err and ws in ("missing", "invalid"):
         ws, note = "error", err
 
-    cost = round(sum(m["info"].get("cost") or 0 for m in assistants), 4)
-    tokens = sum_tokens(m["info"].get("tokens") for m in assistants)
+    cost = round(info.get("cost") or sum(m.get("cost") or 0 for m in asst), 4)
+    tokens = sum_tokens([info.get("tokens")] if info.get("tokens") else (m.get("tokens") for m in asst))
     append(rd, id=t["id"], status="reported", worker=ws, artifact=art, note=note, cost=cost, tokens=tokens, finished=int(time.time()))
     return f"{t['id']} {ws} {art or '-'} | {cut(note, 120)}"
 
 
 def cmd_serve(args):
-    os.execvp("opencode", ["opencode", "serve", "--port", str(args.port), "--hostname", "127.0.0.1", "--pure"])
+    print(f"run workers against it with: OCQ_URL=http://127.0.0.1:{args.port} (set OCQ_PASSWORD if the server needs one)", file=sys.stderr)
+    os.execvp("opencode", ["opencode", "serve", "--port", str(args.port), "--hostname", "127.0.0.1"])
 
 
 def cmd_init(args):
@@ -171,16 +181,10 @@ def cmd_spawn(args):
     for t in targets:
         t["attempts"] = t.get("attempts", 0) + 1
         (rd / "results" / f"{t['id']}.json").unlink(missing_ok=True)
-        s = api("POST", "/session", {"title": f"ocq/{args.run}/{t['id']}", "agent": agent, "permission": rules}, cfg["dir"])
-        body = {"agent": agent, "parts": [{"type": "text", "text": build_prompt(args.run, t)}]}
-        if model:
-            prov, _, mid = model.partition("/")
-            body["model"] = {"providerID": prov, "modelID": mid}
-        if variant:
-            body["variant"] = variant
-        api("POST", f"/session/{s['id']}/prompt_async", body, cfg["dir"])
+        s, used = create_session(f"ocq/{args.run}/{t['id']}", agent, model, variant, rules, cfg["dir"])
+        send_prompt(s["id"], build_prompt(args.run, t))
         append(rd, id=t["id"], status="running", session=s["id"], attempts=t["attempts"], started=int(time.time()), allow=args.allow or None)
-        print(f"{t['id']} running {s['id']}")
+        print(f"{t['id']} running {s['id']} [{used}]")
 
 
 def cmd_wait(args):
@@ -194,10 +198,10 @@ def cmd_wait(args):
             print("nothing running")
             return
         sweep(rd, cfg, {sid: t["id"] for sid, t in running.items()}, append)
-        status = api("GET", "/session/status", directory=cfg["dir"]) or {}
+        live = active() or {}
         lines = []
         for sid, t in running.items():
-            if status.get(sid, {}).get("type", "idle") == "idle":
+            if sid not in live:
                 line = report(rd, cfg, t)
                 if line:
                     lines.append(line)
@@ -224,8 +228,7 @@ def cmd_result(args):
     for d in t.get("denied") or []:
         print(f"denied: {d}")
     if t.get("session"):
-        msgs = api("GET", f"/session/{t['session']}/message", directory=cfg["dir"]) or []
-        txt = last_text(msgs)
+        txt = last_text(messages(t["session"]))
         if txt:
             print("--- last reply ---")
             print(txt[: args.chars])
@@ -263,7 +266,7 @@ def cmd_abort(args):
         if t["status"] != "running":
             print(f"{tid} not running")
             continue
-        api("POST", f"/session/{t['session']}/abort", directory=cfg["dir"])
+        interrupt(t["session"])
         append(rd, id=tid, status="pending", note="aborted")
         print(f"{tid} aborted -> pending")
 
@@ -272,7 +275,7 @@ def register(subparsers):
     p = subparsers.add_parser("ocq", help="orchestrate opencode worker sessions")
     sub = p.add_subparsers(dest="ocq_cmd", required=True)
 
-    s = sub.add_parser("serve", help="run opencode server for workers (foreground)")
+    s = sub.add_parser("serve", help="optional: run a separate opencode server for workers (default: shared background service)")
     s.add_argument("--port", type=int, default=DEFAULT_PORT)
     s.set_defaults(func=cmd_serve)
 
@@ -303,7 +306,7 @@ def register(subparsers):
     s = sub.add_parser("spawn", help="start workers: given ids, or fill free slots")
     s.add_argument("run")
     s.add_argument("ids", nargs="*")
-    s.add_argument("--allow", action="append", help="extra allow rule, e.g. 'bash:ssh host *' or 'webfetch'")
+    s.add_argument("--allow", action="append", help="extra allow rule, e.g. 'shell:ssh host *' or 'webfetch'")
     s.add_argument("--agent")
     s.add_argument("--model", help="provider/model")
     s.add_argument("--variant")

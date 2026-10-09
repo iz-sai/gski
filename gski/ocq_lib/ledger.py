@@ -105,19 +105,24 @@ def resolve(tasks, ids):
     return out
 
 
+ACTIONS = {"bash": "shell", "task": "subagent", "write": "edit", "patch": "edit"}
+
+
 def rules_from(perm):
     rules = []
     for key, val in (perm or {}).items():
+        act = ACTIONS.get(key, key)
         if isinstance(val, str):
-            rules.append({"permission": key, "pattern": "*", "action": val})
+            rules.append({"action": act, "resource": "*", "effect": val})
         else:
-            rules += [{"permission": key, "pattern": pat, "action": act} for pat, act in val.items()]
+            rules += [{"action": act, "resource": pat, "effect": eff} for pat, eff in val.items()]
     return rules
 
 
 def parse_allow(spec):
     key, _, pat = spec.partition(":")
-    return {"permission": key.strip(), "pattern": pat.strip() or "*", "action": "allow"}
+    key = key.strip()
+    return {"action": ACTIONS.get(key, key), "resource": pat.strip() or "*", "effect": "allow"}
 
 
 def build_prompt(run, t):

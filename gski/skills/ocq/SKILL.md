@@ -5,8 +5,9 @@ description: Orchestrate opencode worker sessions - split repetitive work into t
 
 # ocq
 
-`gski ocq` runs tasks in separate opencode worker sessions on a local server
-(`gski ocq serve`, port 4096, started by the user). You are the orchestrator:
+`gski ocq` runs tasks in separate opencode worker sessions on the shared
+opencode background service (auto-started; `OCQ_URL`/`OCQ_PASSWORD` target
+another server, `gski ocq serve` runs a separate one). You are the orchestrator:
 you plan, dispatch, verify, and decide. Workers do the tasks. You never do
 tasks yourself.
 
@@ -29,7 +30,7 @@ gski ocq add RUN --file tasks.jsonl        # {"task": "...", "id"?: "...", "deps
 gski ocq ls                                # runs in this project
 gski ocq ledger RUN [--status S...] [--all]  # counts + actionable rows
 gski ocq spawn RUN                         # fill free slots with ready pending tasks
-gski ocq spawn RUN ID... [--allow 'bash:ssh host *']... [--model M]
+gski ocq spawn RUN ID... [--allow 'shell:ssh host *']... [--model M]
 gski ocq wait-any RUN [--timeout 600]      # block until workers finish
 gski ocq result RUN ID                     # details + worker's last reply
 gski ocq done RUN ID... [--note]
@@ -64,7 +65,7 @@ If the user wants a trial, run 1-3 tasks first and show results before the rest.
    artifacts go, exact done criteria, what to do when unsure (fail with a
    reason, never guess). Workers see only the brief and their task text.
 3. Set extra permissions in `run.json` `permission`, same shape as opencode
-   config: `{"bash": {"ssh myhost *": "allow"}, "webfetch": "deny"}`.
+   config: `{"shell": {"ssh myhost *": "allow"}, "webfetch": "deny"}`.
    Only what the user approved.
 4. Add tasks. Each task text is self-contained: what to do, which input, where
    the output goes. For many tasks write a jsonl file and `add --file`.
@@ -122,6 +123,6 @@ workers keep going while no orchestrator is attached; `wait-any` picks them up.
 
 ## Errors
 
-- `server not reachable`: ask the user to start `gski ocq serve`. Do not start it yourself.
+- `server not reachable`: ask the user to run `opencode service start`. Do not start it yourself.
 - `brief missing`: write `brief.md` first.
 - `max attempts reached`: use `fail`, or ask the user.

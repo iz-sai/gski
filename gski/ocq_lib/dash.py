@@ -5,7 +5,7 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from gski.ocq_lib.api import DEFAULT_DASH_PORT, URL, activity, fetch, last_text
+from gski.ocq_lib.api import DEFAULT_DASH_PORT, activity, active, fetch, last_text, messages, session_info
 from gski.ocq_lib.ledger import cut, fold, known_projects, project_root, remember, sum_tokens
 
 WEB_DIR = Path(__file__).parent / "web"
@@ -14,8 +14,8 @@ DONE_TOKENS = {}
 
 
 def seed():
-    for s in fetch("/experimental/session?search=ocq/&limit=2000", timeout=15) or []:
-        d = s.get("directory")
+    for s in fetch("/api/session?search=ocq/&limit=2000", timeout=15) or []:
+        d = (s.get("location") or {}).get("directory")
         if d and str(s.get("title", "")).startswith("ocq/") and (Path(d) / ".ocq" / "runs").is_dir():
             remember(d)
     root = project_root()
@@ -76,20 +76,18 @@ def project(root):
 
 
 def live_info(sid, root):
-    s = fetch(f"/session/{sid}", root) or {}
-    todos = fetch(f"/session/{sid}/todo", root) or []
-    done = sum(1 for t in todos if t.get("status") in ("completed", "cancelled"))
+    s = session_info(sid)
     return {
         "cost": round(s.get("cost") or 0, 4),
         "tokens": s.get("tokens"),
-        "activity": activity(fetch(f"/session/{sid}/message?limit=4", root) or []),
-        "todos": f"{done}/{len(todos)}" if todos else None,
+        "activity": activity(messages(sid, limit=4)),
+        "todos": None,
     }
 
 
 def finished_tokens(sid, root):
     if sid not in DONE_TOKENS:
-        s = fetch(f"/session/{sid}", root)
+        s = fetch(f"/api/session/{sid}")
         if s is None:
             return None
         DONE_TOKENS[sid] = sum_tokens([s.get("tokens")])
@@ -99,7 +97,7 @@ def finished_tokens(sid, root):
 def run_detail(root, name):
     rd = Path(root) / ".ocq" / "runs" / name
     tasks = fold(rd)
-    live = fetch("/session/status", root)
+    live = active()
     brief = rd / "brief.md"
     rows = []
     for t in tasks.values():
@@ -120,7 +118,7 @@ def run_detail(root, name):
             "tokens": t.get("tokens"),
         }
         if t["status"] == "running" and live is not None:
-            r["live"] = live.get(t.get("session"), {}).get("type", "idle")
+            r["live"] = "busy" if t.get("session") in live else "idle"
             info = live_info(t["session"], root)
             r["cost"] = round(r["cost"] + info.pop("cost"), 4)
             r["tokens"] = sum_tokens([r["tokens"], info.pop("tokens")])
@@ -146,11 +144,11 @@ def task_detail(root, name, tid):
         return None
     reply = ""
     if t.get("session"):
-        reply = last_text(fetch(f"/session/{t['session']}/message", root, timeout=10) or [])[:4000]
+        reply = last_text(messages(t["session"], timeout=10))[:4000]
     keys = ("id", "status", "attempts", "task", "worker", "artifact", "note", "feedback", "denied", "session", "cost", "tokens")
     d = {k: t.get(k) for k in keys}
     if t.get("session") and t["status"] == "running":
-        s = fetch(f"/session/{t['session']}", root) or {}
+        s = session_info(t["session"])
         d["tokens"] = sum_tokens([d["tokens"], s.get("tokens")])
     elif t.get("session") and not d["tokens"]:
         d["tokens"] = finished_tokens(t["session"], root)
@@ -185,7 +183,7 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/app.js":
             return self.send(200, (WEB_DIR / "app.js").read_bytes(), "text/javascript; charset=utf-8")
         if u.path == "/api/projects":
-            return self.send(200, {"server": fetch("/global/health") is not None, "projects": projects()})
+            return self.send(200, {"server": active() is not None, "projects": projects()})
 
         root = q.get("path")
         if root not in known_projects():
