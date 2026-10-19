@@ -60,7 +60,7 @@ gski audioscope transcribe FILE [--lang BCP47] [--no-diarize] [--no-timestamps] 
 gski audioscope sounds FILE [--like TEXT] [--context TEXT] [--extract] [--pad S] [--model flash|pro] [--chunk S] [--output-dir DIR]
 gski gptimage2 "prompt" [--image FILE]... [--mask FILE] [--model gpt-image-2.5-flare|...] [--size WxH|auto] [--quality high|low|medium|xhigh|max|auto] [--format jpg|png|webp] [--compression N] [--background auto|opaque|transparent] [-n N] [--output-dir DIR]
 gski llm-process "prompt" --file FILE [--file FILE]... [--model flash|pro] [--system TEXT] [--json] [--no-think]
-gski nanobanana "prompt" [--image FILE]... [--model banana2.1] [--aspect-ratio RATIO] [--size 1K|2K|4K] [--search] [--output-dir DIR]
+gski nanobanana "prompt" [--image FILE]... [--model banana2.1] [--aspect-ratio RATIO] [--size 1K|2K|4K] [--search] [--image-search] [--thinking] [--format jpg|png|webp] [-o FILE] [--output-dir DIR]
 gski nanoscope "prompt" --image FILE [--url URL]... [--model flash|pro] [--detect] [--segment] [--output-dir DIR]
 gski omni generate "prompt" [--image FILE]... [--video FILE]... [--aspect-ratio 16:9|9:16] [--resolution 360p|720p|1080p|4k] [--task text_to_video|image_to_video|reference_to_video|edit|extend] [--backend api|vertex] [--output FILE] [--async]
 gski omni edit <job-id> "prompt" [--image FILE]... [--video FILE]... [--aspect-ratio 16:9|9:16] [--resolution 360p|720p|1080p|4k] [--output FILE] [--async]
@@ -78,7 +78,7 @@ gski tgscope info|search|show <export-dir-or-result.json> ...
   search "query" [--regex] [--case-sensitive] [--since YYYY-MM-DD] [--until YYYY-MM-DD] [--media KIND] [--min-reactions N] [--limit N] [--width N] [--json]
   show <ids> [--context N] [--json]   # ids: 12 | 12,15 | 10-20
 gski voiceover "text" [--voice NAME_OR_ID] [--model v4|multilingual|flash] [--stability N] [--style N] [--similarity N] [--speed N] [--no-speaker-boost] [--format FMT] [-o FILE] [--output-dir DIR] [--list-voices]
-gski websearch "query" [--model flash|flash-lite] [--raw]
+gski websearch "query" [--sources]
 gski youtube-scope <target> [--comments] [--transcript] [--limit N] [--archive FILE] [--audio] [--video] [--res N] [--audio-quality N] [--output-dir DIR] [--update]
 gski deepresearch start "query" [--file F]... [--max] [--plan] [--output FILE] [--wait]
 gski deepresearch list|status|wait|show|refine|approve|rm ...

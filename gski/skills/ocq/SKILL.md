@@ -80,10 +80,12 @@ repeat
 ```
 
 Waiting:
-- Run `wait-any` with the bash tool timeout above its own: `--timeout 600`
-  with bash timeout 660000.
-- On `timeout: N running`, call it again. No commentary, no status checks in
-  between. Silent waiting is the job.
+- Run `wait-any` as a background shell command (`background: true`) with a
+  long `--timeout`, e.g. `--timeout 3600`. You are notified when it returns;
+  do not poll its output or check status in between.
+- While it runs, the session stays free for the user. If they ask for status,
+  `ledger RUN` is enough; the background wait keeps going.
+- On `timeout: N running`, start it again in the background. No commentary.
 
 Verifying:
 - The worker saying `done` is a claim, not a fact. Check the artifact against

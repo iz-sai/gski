@@ -72,7 +72,7 @@ def build_contents(prompt, image_paths, urls):
 def parse_json(text):
     lines = text.splitlines()
     for i, line in enumerate(lines):
-        if line.strip() == "```json":
+        if line.strip().startswith("```json") or line.strip() == "```json":
             rest = "\n".join(lines[i + 1 :])
             return rest.split("```")[0]
     return text
@@ -86,7 +86,7 @@ def run_segment(response, images, output_dir):
     im = images[0].copy()
     im.thumbnail([1024, 1024], Image.Resampling.LANCZOS)
 
-    items = json.loads(parse_json(response.text))
+    items = json.loads(parse_json(response.text), strict=False)
     saved = []
 
     for i, item in enumerate(items):

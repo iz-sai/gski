@@ -57,6 +57,13 @@ gski voiceover --list-voices
 | `-o, --output` | FILE | — | explicit path, overrides auto-naming |
 | `--list-voices` | flag | — | print voices and exit |
 
+## Voices
+
+| Name | Voice ID | Description / Notes |
+|------|----------|---------------------|
+| Blain (Default) | `jHprmvvyQreWpRuutdmV` | Conversational Ad Voice |
+| Goblin Dub | `ExH3OkS7Pkt4jwaUHbVK` | Custom IVC voice, isolated Goblin dub |
+
 ## Notes
 
 - Earlier models (like `v3`) are prohibited — stay on `v4`.

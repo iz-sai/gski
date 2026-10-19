@@ -22,12 +22,16 @@ PROHIBITED_MODELS = {
 
 ASPECT_RATIOS = [
     "1:1",
+    "1:4",
+    "1:8",
     "2:3",
     "3:2",
     "3:4",
+    "4:1",
     "4:3",
     "4:5",
     "5:4",
+    "8:1",
     "9:16",
     "16:9",
     "21:9",
@@ -55,7 +59,10 @@ def build_config(args):
     kwargs = {
         "automatic_function_calling": types.AutomaticFunctionCallingConfig(
             disable=True
-        )
+        ),
+        "thinking_config": types.ThinkingConfig(
+            thinking_level="MEDIUM" if args.thinking else "MINIMAL"
+        ),
     }
 
     image_config_kwargs = {}
@@ -67,8 +74,14 @@ def build_config(args):
     if image_config_kwargs:
         kwargs["image_config"] = types.ImageConfig(**image_config_kwargs)
 
-    if args.search:
-        kwargs["tools"] = [{"google_search": {}}]
+    if args.search or args.image_search:
+        search_types = types.SearchTypes(
+            web_search=types.WebSearch() if args.search else None,
+            image_search=types.ImageSearch() if args.image_search else None,
+        )
+        kwargs["tools"] = [
+            types.Tool(google_search=types.GoogleSearch(search_types=search_types))
+        ]
 
     return types.GenerateContentConfig(**kwargs)
 
@@ -92,7 +105,7 @@ def build_contents(prompt, image_paths):
     return contents
 
 
-def save_images(response, output_dir, ext="jpg", output=None):
+def save_images(response, output_dir, ext=None, output=None):
     saved = []
     img_idx = 0
 
@@ -100,13 +113,18 @@ def save_images(response, output_dir, ext="jpg", output=None):
         output_path = Path(output)
         output_dir = output_path.parent
         output_dir.mkdir(parents=True, exist_ok=True)
-        stem = output_path.stem
-        suffix = output_path.suffix.lstrip(".") or ext
+        path_ext = output_path.suffix.lstrip(".").lower()
+        if path_ext:
+            stem = output_path.stem
+            suffix = ext or path_ext
+        else:
+            stem = output_path.name
+            suffix = ext or "jpg"
     else:
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
         stem = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        suffix = ext
+        suffix = ext or "jpg"
 
     for part in (response.parts or []):
         if part.thought:
@@ -156,13 +174,27 @@ def register(subparsers):
         help="output resolution: 1K, 2K, 4K (default: 1K)",
     )
     p.add_argument(
-        "--search", action="store_true", help="enable Google Search grounding"
+        "--search",
+        "--web-search",
+        dest="search",
+        action="store_true",
+        help="enable Google Web Search grounding",
+    )
+    p.add_argument(
+        "--image-search",
+        action="store_true",
+        help="enable Google Image Search grounding",
+    )
+    p.add_argument(
+        "--thinking",
+        action="store_true",
+        help="use medium thinking level (default: minimal)",
     )
     p.add_argument(
         "--format",
         choices=["jpg", "png", "webp"],
-        default="jpg",
-        help="output image format (default: jpg)",
+        default=None,
+        help="output image format (default: jpg, or inferred from -o)",
     )
     p.add_argument(
         "--output-dir",

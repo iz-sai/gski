@@ -5,47 +5,28 @@ description: Search the web using Google Search via Gemini grounding — current
 
 ## How it works
 
-`gski websearch` sends a query to Gemini with Google Search grounding enabled. The model searches the web, synthesizes results, and returns text with inline citation references and resolved source URLs.
+`gski websearch` sends your text to Gemini with Google Search enabled. Gemini rewrites it into its own search queries, reads the results, and answers with sources. The text you send is both the question and the seed for those searches: whatever names and terms you put in it end up in the searches.
 
-Vertex AI Search redirect URLs are automatically resolved to actual source URLs.
+Vertex AI Search redirect URLs are resolved to the actual source URLs. Default model is `gemini-3.8-flash`.
 
-Default model is `gemini-3.6-flash`.
-
-## Commands
+## Usage
 
 ```bash
-# Basic search
-gski websearch "who won the 2024 world series"
-
-# Current events
-gski websearch "latest news on AI regulation"
-
-# Technical lookup
-gski websearch "python 3.13 new features"
-
-# Use flash-lite for cheaper/faster queries
-gski websearch "weather in berlin" --model flash-lite
-
-# Raw output (no citation formatting)
-gski websearch "euro 2024 results" --raw
+gski websearch "question or topic"
+gski websearch "question" --sources   # also print source URLs and the searches Gemini ran
 ```
 
-## Options
+Default output is the answer text only. With `--sources`: a `Sources:` list (URL + site) and the `Search queries:` Gemini actually ran. If those queries are not what you meant, rephrase.
 
-| Flag | Values | Default | Notes |
-|------|--------|---------|-------|
-| `--model` | `flash`, `flash-lite` | `flash` | model selection |
-| `--raw` | flag | off | plain text without citation formatting |
+## Writing the query
 
-## Output
+It is a question to an LLM, not a keyword box. Plain sentences work. You can also state what you want back (comparison, numbers, dates, primary sources) and how wide to look.
 
-Default output includes:
-- Answer text with inline citation markers like `[1]`, `[2]`
-- A `Sources:` section with numbered URLs and titles
-- The search queries Gemini used
+Pick the situation:
 
-With `--raw`: just the plain response text, no citations or sources.
+- **You know the entity and want facts about it** (docs, release, API, bug, price): name it exactly.
+- **You don't know the answer and are looking for it** (best, newest, alternatives, what exists): describe the problem and what "good" means. Do not name candidates from your own memory; they bias results toward themselves and your memory may be outdated.
+- **You have a candidate but want to know if it is still the best**: name it once and say explicitly to look beyond it, e.g. "is X still the best choice for Y, and what is newer or better?".
+- **Comparing specific things**: name them all, and ask for the criteria you care about.
 
-## When to use
-
-Use when you need information beyond your training data: current events, recent releases, live data, verifying claims, documentation lookups.
+Add a time anchor ("latest", a year) only when recency matters.

@@ -5,32 +5,49 @@ description: Blender scenes, camera animation and clay-motion previs; control th
 
 # Blender
 
-Use `bpy` for geometry, named collections, keyframes and camera rigs. The user is learning Blender: explain the relevant control briefly, work one requested step at a time, and let them review in the UI. Do not push ahead into a full production or polished render.
+Use `bpy` for geometry, collections, keyframes and camera rigs. 
 
 ## Live connection
 
-- Source: `~/Documents/gski/gski/blender/`. `startup.py` is a standalone Blender startup module; `__init__.py` supplies the `gski blender` client.
-- Dotfiles `.local/link-cfgs` links the module into installed Blender versions' `scripts/startup/gski_bridge.py`. Restart Blender once after installation. Background Blender does not start a bridge.
-- After a Blender version upgrade, rerun the linker after its version directory exists. To disable autostart, remove that version's `gski_bridge.py` symlink and restart Blender; do not delete the source or user preferences.
-- `gski blender sessions` lists socket paths, not confirmed live sessions. `gski blender --pid PID info` checks the scene, file, frame and selection. Always identify the right session before editing; never guess between windows.
-- Write a small Python patch in the scene's working folder, then send it with `gski blender --pid PID exec /absolute/path/patch.py`. Code runs in the UI's main thread; use the data API rather than context-dependent operators where possible. Each request has a fresh namespace, but scene changes persist.
-- Unix sockets live in `$XDG_RUNTIME_DIR/gski-blender-UID/` (fallback `/tmp`), with owner-only permissions. This executes arbitrary Python as the user, not sandboxed code. Never expose it to the network or execute untrusted downloaded code.
-- No automatic saving or rollback. Exceptions can leave partial changes. A timeout does not cancel execution: inspect before retrying. Long commands block the UI. Loading files or resetting Blender should be a separate explicit step.
+- `gski blender info` prints the file (relative to the current folder), unsaved flag, frame, range, active camera and selection.
+- `gski blender exec -c 'import bpy; print(bpy.context.scene.name)'` runs Python inside Blender; stdout comes back. Default for short patches and queries. For longer ones, `gski blender exec patch.py`.
+- `gski blender capture renders/cam.png --frame 1 60 121` renders review frames. Paths resolve from the current folder; keep patches and renders in the project folder.
+- The client finds the live session and drops stale sockets. Pass `--pid PID` only when it reports several sessions.
+- Patches run in the UI's main thread with a fresh namespace; scene changes persist. Use the data API rather than context-dependent operators.
+- No automatic saving or rollback. Exceptions can leave partial changes. A timeout does not cancel execution; check state before retrying. Loading files or resetting Blender is a separate explicit step.
+- This executes arbitrary Python as the user: never expose the socket to the network or run untrusted code.
 
-## Edit → inspect → review
+## Examples
 
-1. Inspect the live scene before changing it. Preserve manual edits; never rebuild or overwrite the scene just to adjust a camera or shading. Save a checkpoint before destructive changes, with the user's agreement.
-2. Patch only the requested objects/frames. Keep meaningful names and separate environment, action and camera collections. Use deterministic keyframes, not real-time simulation.
-3. Capture with `gski blender --pid PID --timeout 60 capture /absolute/path/frame.png --frame 60`. The output directory must exist. This renders the active camera with Workbench at 960px width, preserves aspect ratio and restores frame/render settings. It briefly blocks the UI; it is not a UI screenshot. Open the PNG with the image-reading tool and check framing, occlusion and continuity. Review start/middle/end for motion changes; a still cannot verify timing.
-4. Report what changed and which frame/object to review. Help the user correct it in Blender; do not merely send a file and ask whether it works. If they ask only for explanation, do not edit anything.
+```
+gski blender info
+gski blender exec -c 'import bpy; o = bpy.data.objects["Cam"]; o.location.x = 2; o.keyframe_insert("location", frame=60); print("Cam location.x 2 @60")'
+gski blender exec patch.py
+gski blender --timeout 60 capture renders/cam.png --frame 1 60 121
+```
+
+`--timeout` goes before the subcommand.
+
+## Flow
+
+1. Run `info` once at the start of the task and reuse it. Run it again only when the user says they changed something in the UI, or after a failed or timed-out command.
+2. Before editing, the patch prints only the current values it will change. No scene dumps.
+3. Patch only the requested objects and frames. Preserve manual edits; never rebuild the scene for a local change. Save a checkpoint before destructive changes, with the user's agreement. Use meaningful names and collections, and deterministic keyframes, not simulation.
+4. Patches print a one-line confirmation per change: object, property, frame if keyed, new value. Nothing else.
+5. Capture all needed frames in one call (max 12). Several frames write `cam_0001.png`, `cam_0060.png`, ... plus `cam_grid.png`, a labelled contact sheet within 1600px; a single frame writes just `cam.png`. Renders the active camera with Workbench at 960px, restores settings, silent on success, blocks the UI briefly; add `--timeout 60` for many frames. Review by opening only the grid; open an individual frame only when a tile is too small to judge. Check framing, occlusion, continuity. Stills cannot verify timing.
+6. Report what changed and which frame/object to review. Help the user correct it in Blender. If they ask only for explanation, do not edit or capture.
 
 ## Blender essentials
 
-- `MainCamera` is the viewpoint; a target Empty is the look-at point. `Track To` uses camera local `-Z`, up `Y`. Move the camera for viewpoint, the target for aim. Manual camera rotation/walk navigation conflicts with an active tracking constraint.
+- A typical camera rig is a camera plus a target Empty with a `Track To` constraint (camera local `-Z`, up `Y`). Move the camera for viewpoint, the target for aim. Manual camera rotation or walk navigation conflicts with an active tracking constraint.
 - At the desired frame, edit Location and insert its keyframe (hover over Location and press `I`). Without a new key, scrubbing restores the animation. Graph Editor exposes X/Y/Z curves and easing; Dope Sheet edits timing. Motion Paths visualize travel in 3D.
-- Without a numpad: `View → Viewpoint → Camera`. `F3` searches operators. Switch editors using their type selector; shortcuts act on the editor under the pointer.
-- Solid viewport shading (`space.shading`) and Workbench render shading (`scene.display.shading`) are separate. Configure both. Use material diffuse colors plus `color_type='MATERIAL'`, studio light, cavity and shadows for readable clay references. Wire display and alpha do not guarantee transparent renders.
-- Blender uses Z-up. Explicitly choose scene scale and coordinate conversions. Keep previews lightweight; use 768–960px frames. Do not promise fixed rendering speed. Benchmark before long exports; use a separate background process with inherited two-CPU affinity and low priority, not a long live-UI command.
-- Save via `Ctrl+S` when agreed. `F3 → Revert` discards unsaved changes; it is unnecessary for live patches. The open scene is the source of truth during manual review.
-- UI shortcuts: `~` camera/pie, `Space` play/pause, `N` sidebar/transforms, `G` move (`G,Z,Z` dolly), `I` keyframe, `Alt+I`/`X` delete key, `Shift+S` snap, `Shift+Tab` magnet, `F3` search. Detailed notes: `docs/blender-hints.md`.
+- Without a numpad: `View → Viewpoint → Camera`. Shortcuts act on the editor under the pointer.
+- Solid viewport shading (`space.shading`) and Workbench render shading (`scene.display.shading`) are separate; configure both. For readable clay references use material diffuse colors with `color_type='MATERIAL'`, studio light, cavity and shadows. Wire display and alpha do not guarantee transparent renders.
+- Blender is Z-up. Choose scene scale and coordinate conversions explicitly. Do not promise render speed. Benchmark before long exports and run them as a separate low-priority background process, never as a long live-UI command.
+- Save with `Ctrl+S` when agreed. The open scene is the source of truth during review; live patches never need `F3 → Revert`.
+- UI shortcuts: `~` view pie, `Space` play/pause, `N` sidebar/transforms, `G` move (`G,Z,Z` dolly), `I` keyframe, `Alt+I`/`X` delete key, `Shift+S` snap, `Shift+Tab` magnet, `F3` operator search.
 
+## Setup
+
+- Source: `~/Documents/gski/gski/blender/`. `startup.py` runs inside Blender as the bridge; `__init__.py` is the `gski blender` client.
+- `~/Documents/dotfiles/.local/link-cfgs` links `startup.py` into each Blender version's `scripts/startup/gski_bridge.py`. Background Blender starts no bridge.
