@@ -194,7 +194,7 @@ def _group_segments(words, gap):
 def _transcription_config(args, diarize, timestamps):
     cfg = {}
     if args.lang:
-        cfg["language_codes"] = [args.lang]
+        cfg["language_codes"] = [x.strip() for x in args.lang.split(",") if x.strip()]
     if args.smart:
         cfg["mode"] = "smart"
     else:
@@ -268,16 +268,32 @@ def run_transcribe(args):
             _log(f"progress: chunk {c['index']}/{len(chunks)} ({c['offset']:.0f}s..{c['offset']+c['length']:.0f}s) uploading...")
             f = _upload(client, c["path"])
             try:
-                _log(f"progress: chunk {c['index']}/{len(chunks)} transcribing via {GEMINI_TRANSCRIBE}...")
-                interaction = client.interactions.create(
-                    model=GEMINI_TRANSCRIBE,
-                    input=[{"type": "audio", "uri": f.uri, "mime_type": f.mime_type}],
-                    generation_config={"transcription_config": config},
-                )
+                c_words = []
+                out_text = ""
+                for attempt in range(1, 3):
+                    _log(f"progress: chunk {c['index']}/{len(chunks)} transcribing via {GEMINI_TRANSCRIBE} (attempt {attempt})...")
+                    interaction = client.interactions.create(
+                        model=GEMINI_TRANSCRIBE,
+                        input=[{"type": "audio", "uri": f.uri, "mime_type": f.mime_type}],
+                        generation_config={"transcription_config": config},
+                    )
+                    cand_words = _clean_words(_extract_words(interaction), c)
+                    cand_text = interaction.output_text or ""
+                    if len(cand_words) > len(c_words):
+                        c_words = cand_words
+                        out_text = cand_text
+                    if not timestamps or c["length"] < 180:
+                        break
+                    last_rel = (c_words[-1]["end"] - c["offset"]) if c_words else 0.0
+                    if last_rel >= c["length"] * 0.75:
+                        break
+                    _log(
+                        f"warning: chunk {c['index']} truncated at {last_rel:.0f}s/{c['length']:.0f}s "
+                        f"({len(c_words)} words), retrying..."
+                    )
             finally:
                 _delete(client, f)
-            c_words = _clean_words(_extract_words(interaction), c)
-            texts.append(interaction.output_text or "")
+            texts.append(out_text)
             words.extend(c_words)
             dt_c = time.monotonic() - t_c
             _log(f"progress: chunk {c['index']}/{len(chunks)} done in {dt_c:.1f}s ({len(c_words)} words)")
