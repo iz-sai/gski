@@ -28,6 +28,19 @@ def test_cli_parser_defaults():
     assert args.no_chunking is False
 
 
+def test_cli_parser_gleb_transcribe_submode():
+    parser = argparse.ArgumentParser()
+    sub = parser.add_subparsers()
+    register(sub)
+    args = parser.parse_args(["audioscope", "transcribe", "meeting.ogg", "--lang", "ru-RU", "--chunk", "1200"])
+    assert args.prompt == "transcribe"
+    assert args.input == "meeting.ogg"
+    assert args.lang == "ru-RU"
+    assert args.chunk == 1200.0
+    assert args.no_diarize is False
+    assert args.no_timestamps is False
+
+
 def test_format_diarize_renders_system_speaker_distinctly():
     segs = [
         {"s": "Speaker 1", "t": "00:10", "x": "hello"},

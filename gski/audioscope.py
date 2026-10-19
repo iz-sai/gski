@@ -167,14 +167,23 @@ def format_diarize(data):
 
 
 def register(subparsers):
+    from .audioscope_gleb import DEFAULT_LIKE
+
     p = subparsers.add_parser(
-        "audioscope", help="transcribe and diarize audio via Gemini"
+        "audioscope",
+        help="transcribe and diarize audio via Gemini (or 'transcribe' / 'sounds' submodes)",
     )
     p.add_argument(
         "prompt",
         nargs="?",
         default=None,
-        help="custom prompt (default: auto-selected based on flags)",
+        help="custom prompt, or submode: 'transcribe' (gemini-3.5-transcribe) | 'sounds'",
+    )
+    p.add_argument(
+        "input",
+        nargs="?",
+        default=None,
+        help="input audio/video file when using 'transcribe' or 'sounds' submode",
     )
     p.add_argument(
         "--audio",
@@ -251,6 +260,60 @@ def register(subparsers):
         default=2,
         help="salvage ladder depth: 1=pro only, 2=+flash subchunk, 3=+pro subchunk (default: 2)",
     )
+    p.add_argument(
+        "--chunk",
+        type=float,
+        default=1600.0,
+        metavar="SECS",
+        help="[transcribe/sounds] chunk length in seconds (default: 1600)",
+    )
+    p.add_argument(
+        "--lang",
+        metavar="BCP47",
+        help="[transcribe] language hint, e.g. ru-RU (default: auto)",
+    )
+    p.add_argument(
+        "--no-diarize",
+        action="store_true",
+        help="[transcribe] skip speaker labels",
+    )
+    p.add_argument(
+        "--no-timestamps",
+        action="store_true",
+        help="[transcribe] skip word timestamps",
+    )
+    p.add_argument(
+        "--smart",
+        action="store_true",
+        help="[transcribe] smart mode: cleaned-up plain text (no diarization/timestamps)",
+    )
+    p.add_argument(
+        "--gap",
+        type=float,
+        default=1.2,
+        metavar="SECS",
+        help="[transcribe] max silence between words of one segment (default: 1.2)",
+    )
+    p.add_argument(
+        "--like",
+        default=DEFAULT_LIKE,
+        help="[sounds] what kind of sound to look for",
+    )
+    p.add_argument(
+        "--context",
+        help="[sounds] extra context for the model (who is speaking, what show)",
+    )
+    p.add_argument(
+        "--extract",
+        action="store_true",
+        help="[sounds] cut audio (and video, if any) samples with ffmpeg",
+    )
+    p.add_argument(
+        "--pad",
+        type=float,
+        default=0.5,
+        help="[sounds] seconds of padding around each cut (default: 0.5)",
+    )
     p.set_defaults(func=run)
 
 
@@ -258,6 +321,12 @@ UPLOAD_THRESHOLD = 15 * 1024 * 1024  # 15 MB — leave room for prompt overhead
 
 
 def run(args):
+    if getattr(args, "prompt", None) == "transcribe":
+        from .audioscope_gleb import run_transcribe
+        return run_transcribe(args)
+    if getattr(args, "prompt", None) == "sounds":
+        from .audioscope_gleb import run_sounds
+        return run_sounds(args)
     if not args.audio and not args.youtube:
         print("error: at least one --audio or --youtube required", file=sys.stderr)
         sys.exit(1)
