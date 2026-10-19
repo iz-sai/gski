@@ -4,48 +4,84 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from google import genai
-from google.genai import types
-from PIL import Image
-
 from .models import GEMINI_IMAGE as MODELS
+
+PROHIBITED_MODELS = {
+    "flash",
+    "flash2",
+    "flash3",
+    "pro",
+    "lite",
+    "gemini-2.5-flash-image",
+    "gemini-3.1-flash-image",
+    "gemini-3.1-flash-image-preview",
+    "gemini-3-pro-image",
+    "gemini-3-pro-image-preview",
+    "gemini-3.1-flash-lite-image",
+}
 
 ASPECT_RATIOS = [
     "1:1",
+    "1:4",
+    "1:8",
     "2:3",
     "3:2",
     "3:4",
+    "4:1",
     "4:3",
     "4:5",
     "5:4",
+    "8:1",
     "9:16",
     "16:9",
     "21:9",
 ]
 SIZES = ["1K", "2K", "4K"]
 
+genai = None
+types = None
+Image = None
+
+
+def _init_deps():
+    global genai, types, Image
+    if genai is None:
+        from google import genai as _genai
+        from google.genai import types as _types
+        from PIL import Image as _Image
+
+        genai = _genai
+        types = _types
+        Image = _Image
+
 
 def build_config(args):
     kwargs = {
         "automatic_function_calling": types.AutomaticFunctionCallingConfig(
             disable=True
-        )
+        ),
+        "thinking_config": types.ThinkingConfig(
+            thinking_level="MEDIUM" if args.thinking else "MINIMAL"
+        ),
     }
-
-    if args.model == "pro":
-        kwargs["response_modalities"] = ["TEXT", "IMAGE"]
 
     image_config_kwargs = {}
     if args.aspect_ratio:
         image_config_kwargs["aspect_ratio"] = args.aspect_ratio
-    if args.size and args.model in ("pro", "flash3"):
+    if args.size:
         image_config_kwargs["image_size"] = args.size
 
     if image_config_kwargs:
         kwargs["image_config"] = types.ImageConfig(**image_config_kwargs)
 
-    if args.search:
-        kwargs["tools"] = [{"google_search": {}}]
+    if args.search or args.image_search:
+        search_types = types.SearchTypes(
+            web_search=types.WebSearch() if args.search else None,
+            image_search=types.ImageSearch() if args.image_search else None,
+        )
+        kwargs["tools"] = [
+            types.Tool(google_search=types.GoogleSearch(search_types=search_types))
+        ]
 
     return types.GenerateContentConfig(**kwargs)
 
@@ -69,7 +105,7 @@ def build_contents(prompt, image_paths):
     return contents
 
 
-def save_images(response, output_dir, ext="jpg", output=None):
+def save_images(response, output_dir, ext=None, output=None):
     saved = []
     img_idx = 0
 
@@ -77,15 +113,20 @@ def save_images(response, output_dir, ext="jpg", output=None):
         output_path = Path(output)
         output_dir = output_path.parent
         output_dir.mkdir(parents=True, exist_ok=True)
-        stem = output_path.stem
-        suffix = output_path.suffix.lstrip(".") or ext
+        path_ext = output_path.suffix.lstrip(".").lower()
+        if path_ext:
+            stem = output_path.stem
+            suffix = ext or path_ext
+        else:
+            stem = output_path.name
+            suffix = ext or "jpg"
     else:
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
         stem = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        suffix = ext
+        suffix = ext or "jpg"
 
-    for part in response.parts:
+    for part in (response.parts or []):
         if part.thought:
             continue
         if part.text is not None:
@@ -117,9 +158,8 @@ def register(subparsers):
     )
     p.add_argument(
         "--model",
-        choices=list(MODELS.keys()),
-        default="flash3",
-        help="model to use (default: flash3)",
+        default="banana2.1",
+        help="model to use (default: banana2.1)",
     )
     p.add_argument(
         "--aspect-ratio",
@@ -131,16 +171,30 @@ def register(subparsers):
         "--size",
         choices=SIZES,
         metavar="SIZE",
-        help="output resolution (pro/flash3): 1K, 2K, 4K",
+        help="output resolution: 1K, 2K, 4K (default: 1K)",
     )
     p.add_argument(
-        "--search", action="store_true", help="enable Google Search grounding"
+        "--search",
+        "--web-search",
+        dest="search",
+        action="store_true",
+        help="enable Google Web Search grounding",
+    )
+    p.add_argument(
+        "--image-search",
+        action="store_true",
+        help="enable Google Image Search grounding",
+    )
+    p.add_argument(
+        "--thinking",
+        action="store_true",
+        help="use medium thinking level (default: minimal)",
     )
     p.add_argument(
         "--format",
         choices=["jpg", "png", "webp"],
-        default="jpg",
-        help="output image format (default: jpg)",
+        default=None,
+        help="output image format (default: jpg, or inferred from -o)",
     )
     p.add_argument(
         "--output-dir",
@@ -157,8 +211,18 @@ def register(subparsers):
 
 
 def run(args):
-    if args.size and args.model not in ("pro", "flash3"):
-        print("error: --size requires --model pro or flash3", file=sys.stderr)
+    if args.model in PROHIBITED_MODELS:
+        print(
+            f"error: model '{args.model}' is prohibited. Use Nano Banana 2.1 ('banana2.1').",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    if args.model not in MODELS:
+        print(
+            f"error: unknown model '{args.model}'. Allowed: {', '.join(MODELS.keys())}",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     for p in args.image:
@@ -169,6 +233,8 @@ def run(args):
     if not os.environ.get("GEMINI_API_KEY"):
         print("error: GEMINI_API_KEY env var required", file=sys.stderr)
         sys.exit(1)
+
+    _init_deps()
 
     client = genai.Client()
     model = MODELS[args.model]

@@ -2,12 +2,10 @@ import os
 import sys
 import urllib.request
 
-from google import genai
-from google.genai import types
-
 from .models import GEMINI_TEXT
 
-MODELS = {k: GEMINI_TEXT[k] for k in ("flash", "flash-lite")}
+
+MODEL = GEMINI_TEXT["flash"]
 
 
 def resolve_vertex_url(vertex_uri):
@@ -21,36 +19,48 @@ def resolve_vertex_url(vertex_uri):
         return vertex_uri
 
 
-def resolve_chunks(chunks):
-    resolved = []
-    for chunk in chunks:
-        if not hasattr(chunk, "web") or not chunk.web:
-            continue
-        uri = chunk.web.uri or ""
-        title = chunk.web.title or ""
-        if "vertexaisearch.cloud.google.com" in uri:
-            uri = resolve_vertex_url(uri)
-        resolved.append({"uri": uri, "title": title})
-    return resolved
+def extract_search_info(interaction):
+    queries = []
+    sources = []
+    seen = set()
+
+    for step in getattr(interaction, "steps", []) or []:
+        stype = getattr(step, "type", None)
+        if stype == "google_search_call":
+            args = getattr(step, "arguments", None)
+            q = getattr(args, "queries", None) if args else None
+            if not q and isinstance(args, dict):
+                q = args.get("queries")
+            if q:
+                queries.extend(q)
+        elif stype == "model_output":
+            for block in getattr(step, "content", []) or []:
+                for ann in getattr(block, "annotations", []) or []:
+                    if getattr(ann, "type", None) == "url_citation":
+                        url = getattr(ann, "url", None) or getattr(ann, "uri", None)
+                        title = getattr(ann, "title", "")
+                        if url and url not in seen:
+                            seen.add(url)
+                            resolved_url = (
+                                resolve_vertex_url(url)
+                                if "vertexaisearch.cloud.google.com" in url
+                                else url
+                            )
+                            sources.append({"url": resolved_url, "title": title})
+
+    return queries, sources
 
 
-def format_output(response):
-    candidate = response.candidates[0]
-    text = response.text or ""
+def format_output(interaction):
+    text = getattr(interaction, "output_text", "") or ""
+    queries, sources = extract_search_info(interaction)
 
-    meta = getattr(candidate, "grounding_metadata", None)
-    if not meta:
-        return text
-
-    chunks = getattr(meta, "grounding_chunks", None) or []
-    resolved = resolve_chunks(chunks)[:5]
-
-    if resolved:
+    if sources:
         text += "\n\n---\nSources:\n"
-        for i, src in enumerate(resolved):
-            text += f"[{i + 1}] {src['uri']}\n"
+        for i, src in enumerate(sources[:8]):
+            title_suffix = f" ({src['title']})" if src.get("title") else ""
+            text += f"[{i + 1}] {src['url']}{title_suffix}\n"
 
-    queries = getattr(meta, "web_search_queries", None) or []
     if queries:
         text += f"\nSearch queries: {', '.join(queries)}\n"
 
@@ -63,15 +73,9 @@ def register(subparsers):
     )
     p.add_argument("query", help="search query or question")
     p.add_argument(
-        "--model",
-        choices=list(MODELS.keys()),
-        default="flash",
-        help="model to use (default: flash)",
-    )
-    p.add_argument(
-        "--raw",
+        "--sources",
         action="store_true",
-        help="print raw response text without citation formatting",
+        help="also print resolved source URLs and the search queries used",
     )
     p.set_defaults(func=run)
 
@@ -81,24 +85,17 @@ def run(args):
         print("error: GEMINI_API_KEY env var required", file=sys.stderr)
         sys.exit(1)
 
+    from google import genai
+
     client = genai.Client()
-    model = MODELS[args.model]
 
-    config = types.GenerateContentConfig(
-        tools=[types.Tool(google_search=types.GoogleSearch())],
-        system_instruction="Always use Google Search to find the most current, up-to-date information before answering. Never rely on your training data alone.",
-        automatic_function_calling=types.AutomaticFunctionCallingConfig(
-            disable=True
-        ),
+    interaction = client.interactions.create(
+        model=MODEL,
+        input=args.query,
+        tools=[{"type": "google_search"}],
     )
 
-    response = client.models.generate_content(
-        model=model,
-        contents=args.query,
-        config=config,
-    )
-
-    if args.raw:
-        print(response.text)
+    if args.sources:
+        print(format_output(interaction))
     else:
-        print(format_output(response))
+        print(interaction.output_text or "")

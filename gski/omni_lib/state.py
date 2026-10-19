@@ -69,7 +69,7 @@ def all_jobs():
     return jobs
 
 
-def new_job(prompt, model, aspect_ratio, resolution, duration=None):
+def new_job(prompt, model, aspect_ratio, resolution, duration=None, backend="api"):
     job_id = new_job_id()
     ts = now_iso()
     job = {
@@ -78,6 +78,7 @@ def new_job(prompt, model, aspect_ratio, resolution, duration=None):
         "updated_at": ts,
         "prompt": prompt,
         "model": model,
+        "backend": backend,
         "aspect_ratio": aspect_ratio,
         "resolution": resolution,
         "state": "running",

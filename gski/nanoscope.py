@@ -7,16 +7,32 @@ import urllib.request
 from datetime import datetime
 from pathlib import Path
 
-import numpy as np
-from google import genai
-from google.genai import types
-from PIL import Image, ImageDraw
-
 from .models import GEMINI_TEXT
 
 MODELS = {k: GEMINI_TEXT[k] for k in ("flash", "pro")}
 
 DETECT_SUFFIX = " The box_2d should be [ymin, xmin, ymax, xmax] normalized to 0-1000."
+
+genai = None
+types = None
+np = None
+Image = None
+ImageDraw = None
+
+
+def _init_deps():
+    global genai, types, np, Image, ImageDraw
+    if genai is None:
+        import numpy as _np
+        from google import genai as _genai
+        from google.genai import types as _types
+        from PIL import Image as _Image, ImageDraw as _ImageDraw
+
+        genai = _genai
+        types = _types
+        np = _np
+        Image = _Image
+        ImageDraw = _ImageDraw
 
 
 def build_config(args):
@@ -55,7 +71,7 @@ def build_contents(prompt, image_paths, urls):
 def parse_json(text):
     lines = text.splitlines()
     for i, line in enumerate(lines):
-        if line.strip() == "```json":
+        if line.strip().startswith("```json") or line.strip() == "```json":
             rest = "\n".join(lines[i + 1 :])
             return rest.split("```")[0]
     return text
@@ -69,7 +85,7 @@ def run_segment(response, images, output_dir):
     im = images[0].copy()
     im.thumbnail([1024, 1024], Image.Resampling.LANCZOS)
 
-    items = json.loads(parse_json(response.text))
+    items = json.loads(parse_json(response.text), strict=False)
     saved = []
 
     for i, item in enumerate(items):
@@ -178,6 +194,8 @@ def run(args):
     if not os.environ.get("GEMINI_API_KEY"):
         print("error: GEMINI_API_KEY env var required", file=sys.stderr)
         sys.exit(1)
+
+    _init_deps()
 
     prompt = args.prompt
     if args.detect:

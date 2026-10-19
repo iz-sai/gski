@@ -10,8 +10,6 @@ warnings.filterwarnings(
     "ignore", message=r".*Interactions usage is experimental.*"
 )
 
-from google import genai
-
 from ..models import GEMINI_DEEP_RESEARCH as AGENT_MODELS
 
 POLL_INTERVAL = 10
@@ -21,6 +19,7 @@ def make_client():
     if not os.environ.get("GEMINI_API_KEY"):
         print("error: GEMINI_API_KEY env var required", file=sys.stderr)
         sys.exit(1)
+    from google import genai
     return genai.Client()
 
 

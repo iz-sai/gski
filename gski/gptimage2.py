@@ -88,8 +88,8 @@ def register(subparsers):
     p.add_argument(
         "--model",
         choices=MODELS,
-        default="gpt-image-2",
-        help="model to use (default: gpt-image-2)",
+        default="gpt-image-2.5-flare",
+        help="model to use (default: gpt-image-2.5-flare)",
     )
     p.add_argument(
         "--size",
@@ -99,9 +99,9 @@ def register(subparsers):
     )
     p.add_argument(
         "--quality",
-        choices=["auto", "low", "medium", "high"],
-        default="auto",
-        help="rendering quality (default: auto)",
+        choices=["auto", "low", "medium", "high", "xhigh", "max"],
+        default="high",
+        help="rendering quality (default: high)",
     )
     p.add_argument(
         "--format",
@@ -117,7 +117,7 @@ def register(subparsers):
     )
     p.add_argument(
         "--background",
-        choices=["auto", "opaque"],
+        choices=["auto", "opaque", "transparent"],
         default="auto",
         help="background handling (default: auto)",
     )
@@ -149,6 +149,13 @@ def run(args):
         out_ext = Path(args.output).suffix.lstrip(".").lower()
         if out_ext in ("jpg", "jpeg", "png", "webp") and "--format" not in sys.argv:
             args.format = "jpg" if out_ext == "jpeg" else out_ext
+
+    if args.background == "transparent":
+        if args.format == "jpg" and "--format" not in sys.argv and not args.output:
+            args.format = "png"
+        elif args.format == "jpg":
+            print("error: --background transparent requires png or webp format", file=sys.stderr)
+            sys.exit(1)
 
     for p in args.image:
         if not os.path.isfile(p):

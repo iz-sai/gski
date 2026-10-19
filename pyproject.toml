@@ -24,4 +24,4 @@ gski = "gski.cli:main"
 include = ["gski*"]
 
 [tool.setuptools.package-data]
-gski = ["skills/**/*"]
+gski = ["skills/**/*", "ocq_lib/web/*"]

@@ -25,6 +25,12 @@ gski omni rm JOB
 
 Common options: `--aspect-ratio 9:16|16:9`, `--resolution 360p|720p|1080p|4k`, `--async`. Job IDs accept a unique prefix.
 
+## Backends
+
+Default backend is the Gemini API (`GEMINI_API_KEY`). Add `--backend vertex` on `generate` to use Vertex AI with a service account; the job remembers the backend, so `edit`, `extend`, `wait`, and `status` need no flag. Set `GSKI_OMNI_BACKEND=vertex` to make it the default.
+
+Vertex credentials are read from `~/.config/gski/gemcred.json` (or `GSKI_VERTEX_CREDENTIALS` / `GOOGLE_APPLICATION_CREDENTIALS`); project comes from the key file unless `GOOGLE_CLOUD_PROJECT` is set, location defaults to `global`. On Vertex, input videos are inlined instead of uploaded, so keep them small.
+
 Examples:
 
 ```bash

@@ -3,10 +3,13 @@ from pathlib import Path
 
 from gski.deepresearch_lib.format import fmt_age, truncate
 from gski.models import GEMINI_OMNI as MODELS
+from gski.models import GEMINI_OMNI_VERTEX as VERTEX_MODELS
 from gski.omni_lib.api import (
+    BACKENDS,
     build_generation_config,
     build_input,
     build_response_format,
+    default_backend,
     download_video,
     extract_video,
     interactions_create,
@@ -29,12 +32,23 @@ RESOLUTIONS = ["360p", "720p", "1080p", "4k"]
 TASKS = ["text_to_video", "image_to_video", "reference_to_video", "edit", "extend"]
 
 
+def _extract_error(interaction):
+    steps = getattr(interaction, "steps", None) or []
+    for s in steps:
+        err = getattr(s, "error", None) if hasattr(s, "error") else (s.get("error") if isinstance(s, dict) else None)
+        if err:
+            msg = getattr(err, "message", None) or str(err)
+            if msg:
+                return msg
+    return getattr(interaction, "errors", None) or getattr(interaction, "error", "unknown error")
+
+
 def _finish(job, client, interaction, output):
     status = getattr(interaction, "status", None)
     if status == "failed":
         job["state"] = "failed"
         save_job(job)
-        err = getattr(interaction, "error", "unknown error")
+        err = _extract_error(interaction)
         print(f"error: generation failed: {err}", file=sys.stderr)
         sys.exit(2)
 
@@ -66,11 +80,13 @@ def _complete(job, client, interaction, output):
 
 
 def cmd_generate(args):
-    client = make_client()
-    model = MODELS["flash"]
+    backend = args.backend
+    client = make_client(backend)
+    model = (VERTEX_MODELS if backend == "vertex" else MODELS)["flash"]
 
-    user_input = build_input(args.prompt, args.image, args.video, client)
+    user_input = build_input(args.prompt, args.image, args.video, client, backend)
     is_async = args.async_mode
+    aspect_ratio = None if args.task == "edit" else args.aspect_ratio
     kwargs = {
         "model": model,
         "input": user_input,
@@ -78,7 +94,7 @@ def cmd_generate(args):
         "store": True,
         "stream": False,
         "response_format": build_response_format(
-            args.aspect_ratio, args.resolution, args.duration
+            aspect_ratio, args.resolution, args.duration, backend
         ),
     }
     gen_config = build_generation_config(args.task)
@@ -94,6 +110,7 @@ def cmd_generate(args):
         aspect_ratio=args.aspect_ratio,
         resolution=args.resolution,
         duration=args.duration,
+        backend=backend,
     )
     record_interaction(job, iid, "generate", args.prompt)
     save_job(job)
@@ -111,13 +128,15 @@ def cmd_generate(args):
 
 def _follow_up(args, kind):
     job = load_job(args.id)
-    client = make_client()
+    backend = job.get("backend") or "api"
+    client = make_client(backend)
     is_async = args.async_mode
     user_input = build_input(
         args.prompt,
         getattr(args, "image", []),
         getattr(args, "video", []),
         client,
+        backend,
     )
     aspect_ratio = args.aspect_ratio or job.get("aspect_ratio") or "9:16"
     resolution = args.resolution or job.get("resolution") or "720p"
@@ -131,7 +150,9 @@ def _follow_up(args, kind):
         background=is_async,
         store=True,
         stream=False,
-        response_format=build_response_format(aspect_ratio, resolution, duration),
+        response_format=build_response_format(
+            aspect_ratio, resolution, duration, backend
+        ),
     )
     iid = new_interaction_id(interaction)
     record_interaction(job, iid, kind, args.prompt)
@@ -181,13 +202,14 @@ def cmd_list(args):
 
 def cmd_status(args):
     job = load_job(args.id)
-    client = make_client()
+    client = make_client(job.get("backend") or "api")
     iid = job["current_interaction_id"]
     interaction = client.interactions.get(iid)
     remote_status = getattr(interaction, "status", "unknown")
 
     print(f"job:         {job['job_id']}")
     print(f"state:       {job['state']}")
+    print(f"backend:     {job.get('backend', 'api')}")
     print(f"remote:      {remote_status}")
     print(f"interaction: {iid}")
     print(f"created:     {job['created_at']}  ({fmt_age(job['created_at'])} ago)")
@@ -203,7 +225,7 @@ def cmd_wait(args):
         print(job["video_path"])
         return
 
-    client = make_client()
+    client = make_client(job.get("backend") or "api")
     result = poll(client, job["current_interaction_id"])
     _finish(job, client, result, args.output)
 
@@ -291,6 +313,12 @@ def register(subparsers):
         "--task",
         choices=TASKS,
         help="fallback task hint; prefer describing the task in the prompt",
+    )
+    gen.add_argument(
+        "--backend",
+        choices=BACKENDS,
+        default=default_backend(),
+        help=f"api backend (default: {default_backend()}); vertex uses a service account",
     )
     gen.set_defaults(func=cmd_generate)
 

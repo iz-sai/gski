@@ -1,5 +1,7 @@
 import base64
+import json
 import mimetypes
+import os
 import re
 import sys
 import time
@@ -8,12 +10,59 @@ from pathlib import Path
 from ..deepresearch_lib.api import (
     interactions_create,
     interactions_get,
-    make_client,
     new_interaction_id,
 )
+from ..deepresearch_lib.api import make_client as make_api_client
 
 POLL_INTERVAL = 10
 FILE_POLL_INTERVAL = 5
+
+BACKENDS = ["api", "vertex"]
+VERTEX_LOCATION = "global"
+VERTEX_API_REVISION = "2026-05-20"
+VERTEX_CRED_PATH = Path.home() / ".config" / "gski" / "gemcred.json"
+
+
+def default_backend():
+    return os.environ.get("GSKI_OMNI_BACKEND") or "api"
+
+
+def _vertex_credentials():
+    for c in (
+        os.environ.get("GSKI_VERTEX_CREDENTIALS"),
+        os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"),
+        VERTEX_CRED_PATH,
+    ):
+        if c and Path(c).exists():
+            return Path(c).resolve()
+    print(
+        f"error: vertex service account json not found at {VERTEX_CRED_PATH}\n"
+        "  set GSKI_VERTEX_CREDENTIALS or GOOGLE_APPLICATION_CREDENTIALS",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+
+
+def make_client(backend="api"):
+    if backend != "vertex":
+        return make_api_client()
+    from google import genai
+    from google.genai import types
+
+    cred = _vertex_credentials()
+    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = str(cred)
+    project = os.environ.get("GOOGLE_CLOUD_PROJECT")
+    if not project:
+        project = json.loads(cred.read_text()).get("project_id")
+    if not project:
+        print("error: no project_id in credentials; set GOOGLE_CLOUD_PROJECT", file=sys.stderr)
+        sys.exit(1)
+    return genai.Client(
+        vertexai=True,
+        project=project,
+        location=os.environ.get("GOOGLE_CLOUD_LOCATION") or VERTEX_LOCATION,
+        http_options=types.HttpOptions(headers={"Api-Revision": VERTEX_API_REVISION}),
+    )
 
 
 def _read_base64(path):
@@ -40,14 +89,23 @@ def upload_video(client, path):
     return uri, mime
 
 
-def build_input(prompt, images, videos, client):
+def build_input(prompt, images, videos, client, backend="api"):
     if not images and not videos:
         return prompt
 
     parts = []
     for video in videos:
+        p = Path(video)
+        if backend == "vertex":
+            # vertex has no files api; inline the bytes
+            if not p.exists():
+                print(f"error: file not found: {video}", file=sys.stderr)
+                sys.exit(1)
+            mime = mimetypes.guess_type(str(p))[0] or "video/mp4"
+            parts.append({"type": "video", "data": _read_base64(p), "mime_type": mime})
+            continue
         uri, mime = upload_video(client, video)
-        parts.append({"type": "document", "uri": uri, "mime_type": mime})
+        parts.append({"type": "video", "uri": uri, "mime_type": mime})
     for img in images:
         p = Path(img)
         if not p.exists():
@@ -59,8 +117,10 @@ def build_input(prompt, images, videos, client):
     return parts
 
 
-def build_response_format(aspect_ratio, resolution, duration=None):
-    fmt = {"type": "video", "delivery": "uri", "resolution": resolution}
+def build_response_format(aspect_ratio, resolution, duration=None, backend="api"):
+    fmt = {"type": "video", "resolution": resolution}
+    if backend != "vertex":
+        fmt["delivery"] = "uri"
     if aspect_ratio:
         fmt["aspect_ratio"] = aspect_ratio
     if duration:
@@ -133,11 +193,21 @@ def _file_id_from_uri(uri):
     return m.group(1) if m else None
 
 
+def _download_gcs(uri, dest):
+    from google.cloud import storage
+
+    bucket, blob = uri[len("gs://") :].split("/", 1)
+    dest.write_bytes(storage.Client().bucket(bucket).blob(blob).download_as_bytes())
+    return dest
+
+
 def download_video(client, data, uri, dest):
     dest = Path(dest)
     if data:
         dest.write_bytes(base64.b64decode(data))
         return dest
+    if uri and uri.startswith("gs://"):
+        return _download_gcs(uri, dest)
     if uri:
         file_id = _file_id_from_uri(uri)
         if file_id:
