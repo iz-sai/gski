@@ -1,5 +1,7 @@
 import json
 import os
+import shutil
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -11,12 +13,16 @@ from gski.ocq_lib.api import (
     active,
     assistants,
     create_session,
+    die,
     err_text,
     interrupt,
+    kill_shell,
     last_text,
     messages,
+    pending_input,
     send_prompt,
     session_info,
+    shells,
     sweep,
 )
 from gski.ocq_lib.ledger import (
@@ -42,6 +48,15 @@ def report(rd, cfg, t):
     msgs = messages(t["session"])
     asst = assistants(msgs)
     last = asst[0] if asst else None
+    sent = t.get("sent")
+    if sent and time.time() - sent < 120 and not (last and last["time"]["created"] / 1000 >= sent):
+        return None
+    if last and pending_input(msgs):
+        return None
+    result = rd / "results" / f"{t['id']}.json"
+    fresh = result.exists() and result.stat().st_mtime >= (sent or 0)
+    if not fresh and shells(t["session"], cfg["dir"]) != []:
+        return None
     info = session_info(t["session"])
     if not last:
         if time.time() - t.get("started", 0) < 120:
@@ -58,7 +73,7 @@ def report(rd, cfg, t):
 
     ws, art, note = "missing", None, cut(last_text(msgs), 200)
     try:
-        r = json.loads((rd / "results" / f"{t['id']}.json").read_text())
+        r = json.loads(result.read_text())
         ws, art, note = r.get("status", "?"), r.get("artifact"), r.get("note") or note
     except FileNotFoundError:
         pass
@@ -70,7 +85,8 @@ def report(rd, cfg, t):
 
     cost = round(info.get("cost") or sum(m.get("cost") or 0 for m in asst), 4)
     tokens = sum_tokens([info.get("tokens")] if info.get("tokens") else (m.get("tokens") for m in asst))
-    append(rd, id=t["id"], status="reported", worker=ws, artifact=art, note=note, cost=cost, tokens=tokens, finished=int(time.time()))
+    append(rd, id=t["id"], status="reported", worker=ws, artifact=art, note=note, cost=cost, tokens=tokens,
+           billed={"cost": cost, "tokens": tokens}, finished=int(time.time()))
     return f"{t['id']} {ws} {art or '-'} | {cut(note, 120)}"
 
 
@@ -181,10 +197,28 @@ def cmd_spawn(args):
     for t in targets:
         t["attempts"] = t.get("attempts", 0) + 1
         (rd / "results" / f"{t['id']}.json").unlink(missing_ok=True)
+        (rd / "results" / f"{t['id']}.ping").unlink(missing_ok=True)
         s, used = create_session(f"ocq/{args.run}/{t['id']}", agent, model, variant, rules, cfg["dir"])
         send_prompt(s["id"], build_prompt(args.run, t))
-        append(rd, id=t["id"], status="running", session=s["id"], attempts=t["attempts"], started=int(time.time()), allow=args.allow or None)
+        append(rd, id=t["id"], status="running", session=s["id"], attempts=t["attempts"], started=int(time.time()), allow=args.allow or None, ping=None)
         print(f"{t['id']} running {s['id']} [{used}]")
+
+
+def fmt_dur(s):
+    h, rem = divmod(max(int(s), 0), 3600)
+    m, s = divmod(rem, 60)
+    return f"{h}h{m:02d}m" if h else f"{m}m{s:02d}s"
+
+
+def notify(text, color):
+    if not (shutil.which("hyprctl") and os.environ.get("HYPRLAND_INSTANCE_SIGNATURE")):
+        return
+    try:
+        subprocess.Popen(["hyprctl", "notify", "-1", "6000", color, f"fontsize:20 {text}"],
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         start_new_session=True)
+    except OSError:
+        pass
 
 
 def cmd_wait(args):
@@ -198,8 +232,17 @@ def cmd_wait(args):
             print("nothing running")
             return
         sweep(rd, cfg, {sid: t["id"] for sid, t in running.items()}, append)
-        live = active() or {}
         lines = []
+        for t in running.values():
+            p = rd / "results" / f"{t['id']}.ping"
+            try:
+                msg = cut(p.read_text(), 300)
+                p.unlink()
+            except FileNotFoundError:
+                continue
+            append(rd, id=t["id"], ping=msg or "(empty)")
+            lines.append(f"{t['id']} ping | {msg or '(empty)'}")
+        live = active() or {}
         for sid, t in running.items():
             if sid not in live:
                 line = report(rd, cfg, t)
@@ -207,7 +250,14 @@ def cmd_wait(args):
                     lines.append(line)
         if lines:
             print("\n".join(lines))
-            print(summary(fold(rd)))
+            tasks = fold(rd)
+            print(summary(tasks))
+            if not any(t["status"] in ("pending", "running") for t in tasks.values()):
+                bad = any(t["status"] == "failed" or (t["status"] == "reported" and t.get("worker") != "done") for t in tasks.values())
+                starts = [t["started"] for t in tasks.values() if t.get("started")]
+                ends = [t["finished"] for t in tasks.values() if t.get("finished")]
+                took = f" | {fmt_dur(max(ends) - min(starts))}" if starts and ends else ""
+                notify(f"{args.run}: {summary(tasks).split(' | ')[0]}{took}", "rgb(fb4934)" if bad else "rgb(d79921)")
             return
         if time.time() >= deadline:
             print(f"timeout: {len(running)} running")
@@ -222,7 +272,7 @@ def cmd_result(args):
     t = tasks[resolve(tasks, [args.id])[0]]
     print(f"id: {t['id']}  status: {t['status']}  attempts: {t.get('attempts', 0)}  session: {t.get('session', '-')}")
     print(f"task: {t.get('task')}")
-    for k in ("worker", "artifact", "note", "feedback", "cost", "tokens"):
+    for k in ("worker", "artifact", "note", "ping", "feedback", "cost", "tokens"):
         if t.get(k) not in (None, ""):
             print(f"{k}: {t[k]}")
     for d in t.get("denied") or []:
@@ -256,6 +306,31 @@ def mark(args, status):
         print(f"{tid} {status}")
 
 
+def cmd_send(args):
+    rd = run_dir(args.run)
+    tasks = fold(rd)
+    t = tasks[resolve(tasks, [args.id])[0]]
+    if t["status"] not in ("running", "reported") or not t.get("session"):
+        die(f"{t['id']} is {t['status']}: send works on running or reported tasks (use retry --feedback)")
+    rel = f".ocq/runs/{args.run}/results/{t['id']}.json"
+    ping = f".ocq/runs/{args.run}/results/{t['id']}.ping"
+    text = (
+        f"Message from the ocq orchestrator:\n{args.text}\n\n"
+        f"If this message asks for a ping (an answer now, or when a condition is met), write one line to {ping} "
+        "at that point and keep working. Do not ping otherwise.\n"
+        f"If this changes your result, rewrite {rel}. Then reply with one line."
+    )
+    delivery = "queue" if args.queue else "steer"
+    send_prompt(t["session"], text, delivery)
+    ev = {"id": t["id"], "sent": time.time(), "message": cut(args.text, 300)}
+    if t["status"] == "reported":
+        b = t.get("billed") or {}
+        neg = {k: -v for k, v in (b.get("tokens") or {}).items()}
+        ev.update(status="running", cost=-(b.get("cost") or 0), tokens=neg or None, billed=None)
+    append(rd, **ev)
+    print(f"{t['id']} sent ({delivery}){' -> running' if t['status'] == 'reported' else ''}")
+
+
 def cmd_abort(args):
     rd = run_dir(args.run)
     cfg = load_cfg(rd)
@@ -266,7 +341,15 @@ def cmd_abort(args):
         if t["status"] != "running":
             print(f"{tid} not running")
             continue
+        bg = shells(t["session"], cfg["dir"]) or []
+        for s in bg:
+            kill_shell(s["id"], cfg["dir"])
         interrupt(t["session"])
+        # kill notifications wake the session again
+        for _ in range(10 if bg else 0):
+            time.sleep(0.5)
+            if t["session"] in (active() or {}):
+                interrupt(t["session"])
         append(rd, id=tid, status="pending", note="aborted")
         print(f"{tid} aborted -> pending")
 
@@ -341,6 +424,13 @@ def register(subparsers):
     s.add_argument("run")
     s.add_argument("ids", nargs="*")
     s.set_defaults(func=cmd_abort)
+
+    s = sub.add_parser("send", help="message a running or reported worker; reported goes back to running")
+    s.add_argument("run")
+    s.add_argument("id")
+    s.add_argument("text")
+    s.add_argument("--queue", action="store_true", help="deliver after the current turn instead of steering it")
+    s.set_defaults(func=cmd_send)
 
     s = sub.add_parser("dash", help="read-only web dashboard of all runs")
     s.add_argument("--port", type=int, default=4097)

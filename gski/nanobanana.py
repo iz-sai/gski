@@ -1,4 +1,5 @@
 import io
+import json
 import os
 import sys
 from datetime import datetime
@@ -37,6 +38,10 @@ ASPECT_RATIOS = [
     "21:9",
 ]
 SIZES = ["1K", "2K", "4K"]
+
+VERTEX_CRED_PATH = Path.home() / ".config" / "gski" / "gemcred.json"
+VERTEX_LOCATION = "global"
+VERTEX_API_REVISION = "2026-05-20"
 
 genai = None
 types = None
@@ -207,7 +212,54 @@ def register(subparsers):
         metavar="FILE",
         help="output file path (overrides --output-dir and auto-naming; extension sets format unless --format given)",
     )
+    p.add_argument(
+        "--backend",
+        choices=["vertex", "api"],
+        default=os.environ.get("GSKI_NANOBANANA_BACKEND") or "vertex",
+        help="backend to use: vertex (default) or api",
+    )
     p.set_defaults(func=run)
+
+
+def _vertex_credentials():
+    for c in (
+        os.environ.get("GSKI_VERTEX_CREDENTIALS"),
+        os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"),
+        VERTEX_CRED_PATH,
+    ):
+        if c and Path(c).exists():
+            return Path(c).resolve()
+    return None
+
+
+def make_client(backend="vertex"):
+    if backend == "vertex":
+        cred = _vertex_credentials()
+        if not cred:
+            print(
+                f"error: vertex service account json not found at {VERTEX_CRED_PATH}\n"
+                "  set GSKI_VERTEX_CREDENTIALS or GOOGLE_APPLICATION_CREDENTIALS",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = str(cred)
+        project = os.environ.get("GOOGLE_CLOUD_PROJECT")
+        if not project:
+            project = json.loads(cred.read_text()).get("project_id")
+        if not project:
+            print("error: no project_id in credentials; set GOOGLE_CLOUD_PROJECT", file=sys.stderr)
+            sys.exit(1)
+        return genai.Client(
+            vertexai=True,
+            project=project,
+            location=os.environ.get("GOOGLE_CLOUD_LOCATION") or VERTEX_LOCATION,
+            http_options=types.HttpOptions(headers={"Api-Revision": VERTEX_API_REVISION}),
+        )
+
+    if not os.environ.get("GEMINI_API_KEY"):
+        print("error: GEMINI_API_KEY env var required for api backend", file=sys.stderr)
+        sys.exit(1)
+    return genai.Client()
 
 
 def run(args):
@@ -230,13 +282,9 @@ def run(args):
             print(f"error: image not found: {p}", file=sys.stderr)
             sys.exit(1)
 
-    if not os.environ.get("GEMINI_API_KEY"):
-        print("error: GEMINI_API_KEY env var required", file=sys.stderr)
-        sys.exit(1)
-
     _init_deps()
 
-    client = genai.Client()
+    client = make_client(args.backend)
     model = MODELS[args.model]
     contents = build_contents(args.prompt, args.image)
     config = build_config(args)

@@ -13,10 +13,12 @@ let st = {
   run: null,
   filter: "all",
   open: new Set(),
+  actOpen: new Set(),
   details: {},
   data: null,
   limit: LIMIT,
   brief: false,
+  allRuns: false,
 };
 let runs = [];
 let sig = "";
@@ -63,28 +65,12 @@ function kn(n) {
 }
 
 const tout = (tk) => ((tk && tk.output) || 0) + ((tk && tk.reasoning) || 0);
-const tsum = (tk) =>
-  tk
-    ? (tk.input || 0) +
-      tout(tk) +
-      (tk.cache_read || 0) +
-      (tk.cache_write || 0)
-    : 0;
 
 function tokFull(tk) {
   if (!tk) return "";
   return `input ${kn(tk.input)} · output ${kn(tk.output)} · reasoning ${kn(
     tk.reasoning
   )} · cache read ${kn(tk.cache_read)} · cache write ${kn(tk.cache_write)}`;
-}
-
-function tokShort(tk) {
-  if (!tk || !tsum(tk)) return "";
-  const inTokens = (tk.input || 0) + (tk.cache_read || 0);
-  const outTokens = tout(tk);
-  return `<span title="${esc(tokFull(tk))}">${kn(inTokens)} in · ${kn(
-    outTokens
-  )} out</span>`;
 }
 
 async function get(url) {
@@ -168,6 +154,7 @@ async function loadProjects() {
       st.path = el.dataset.path;
       st.run = null;
       st.open.clear();
+      st.actOpen.clear();
       st.filter = "all";
       st.data = null;
       writeHash();
@@ -185,6 +172,7 @@ function renderIfChanged() {
     st.data,
     st.details,
     [...st.open],
+    [...st.actOpen],
     st.filter,
     st.limit,
   ]);
@@ -231,21 +219,58 @@ async function loadDetail(id) {
   renderIfChanged();
 }
 
+function actBox(t) {
+  const raw = Array.isArray(t.activity)
+    ? t.activity
+    : t.activity
+    ? [{ text: t.activity, status: "running" }]
+    : [];
+  const items =
+    t.live === "idle"
+      ? [{ text: "finished, waiting for orchestrator", status: "completed" }, ...raw]
+      : raw;
+  if (!items.length) return "";
+  const open = st.actOpen.has(t.id);
+  const cnt = items.length > 1 ? `${items.length} ` : "";
+  if (!open) {
+    const one = items[0].text.replace(/\s+/g, " ");
+    return `<div class="act mono"><span class="act-one">▸ ${esc(
+      one
+    )}</span><span class="act-cnt">${cnt}▾</span></div>`;
+  }
+  const rows = items
+    .map((a, i) => {
+      const cls =
+        a.status === "error"
+          ? "err"
+          : a.status === "running"
+          ? "run"
+          : "done";
+      const ic = a.status === "error" ? "✗" : a.status === "running" ? "▸" : "✓";
+      return `<div class="act-row ${cls}"><span class="act-ic">${ic}</span><span class="act-txt">${esc(
+        a.text
+      )}</span>${i === 0 ? `<span class="act-cnt">${cnt}▴</span>` : ""}</div>`;
+    })
+    .join("");
+  return `<div class="act mono open">${rows}</div>`;
+}
+
 function taskLine(t) {
-  if (t.worker && t.status !== "running")
-    return `<span class="ws" style="color:${
-      t.worker === "done" ? COLORS.done : COLORS.failed
-    }">${esc(t.worker)}</span>${esc(t.note)}${
-      t.artifact ? ` <span class="muted mono">→ ${esc(t.artifact)}</span>` : ""
-    }`;
-  const act = t.activity
-    ? `<div class="act mono">${
-        t.live === "idle"
-          ? "finished, waiting for orchestrator"
-          : "▸ " + esc(t.activity)
-      }</div>`
-    : "";
-  return `<span class="muted">${esc(t.task)}</span>${act}`;
+  if (t.status === "running") {
+    const ping = t.ping
+      ? `<div class="ping"><b>ping</b>${esc(t.ping)}</div>`
+      : "";
+    return `<div class="sum">${esc(t.task)}</div>${ping}${actBox(t)}`;
+  }
+  const ws =
+    t.status === "reported" && t.worker
+      ? `<span class="ws" style="color:${
+          t.worker === "done" ? COLORS.done : COLORS.failed
+        }">${esc(t.worker)}</span>`
+      : "";
+  return `<div class="sum${t.status === "done" ? " muted" : ""}">${ws}${esc(
+    (t.status !== "pending" && t.note) || t.task
+  )}</div>`;
 }
 
 function taskTime(t) {
@@ -258,24 +283,129 @@ function taskTime(t) {
   return "";
 }
 
+function inline(s) {
+  return s
+    .split(/(`[^`]+`)/)
+    .map((p, k) =>
+      k % 2
+        ? `<code>${p.slice(1, -1)}</code>`
+        : p
+            .replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g, (_, t, u) => `<a href="${u}" target="_blank" rel="noopener">${t}</a>`)
+            .replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>")
+            .replace(/(^|[^\w*])\*([^*\s](?:[^*]*[^*\s])?)\*(?!\w)/g, "$1<i>$2</i>")
+    )
+    .join("");
+}
+
+const FENCE = /^\s*```/;
+const HEAD = /^(#{1,6})\s+(.*)$/;
+const LI = /^(\s*)([-*+]|\d+[.)])\s+/;
+const QUOTE = /^\s*>\s?/;
+const HR = /^\s*([-*_])(\s*\1){2,}\s*$/;
+const TSEP = /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/;
+
+function list(items) {
+  let html = "";
+  const stack = [];
+  for (const it of items) {
+    while (stack.length && it.ind < stack[stack.length - 1].ind)
+      html += `</li></${stack.pop().tag}>`;
+    const top = stack[stack.length - 1];
+    if (!top || it.ind > top.ind) {
+      const tag = it.ord ? "ol" : "ul";
+      stack.push({ ind: it.ind, tag });
+      html += `<${tag}><li>`;
+    } else html += "</li><li>";
+    html += inline(esc(it.text));
+  }
+  while (stack.length) html += `</li></${stack.pop().tag}>`;
+  return html;
+}
+
+function md(src) {
+  const lines = String(src ?? "").replace(/\r/g, "").split("\n");
+  const table = (i) => /^\s*\|/.test(lines[i]) && TSEP.test(lines[i + 1] || "");
+  const block = (i) => {
+    const l = lines[i];
+    return !l.trim() || FENCE.test(l) || HEAD.test(l) || LI.test(l) || QUOTE.test(l) || HR.test(l) || table(i);
+  };
+  const cells = (r) =>
+    r.trim().replace(/^\||\|$/g, "").split("|").map((c) => inline(esc(c.trim())));
+  const out = [];
+  let i = 0;
+  while (i < lines.length) {
+    const l = lines[i];
+    let m;
+    if (!l.trim()) {
+      i++;
+    } else if (FENCE.test(l)) {
+      const buf = [];
+      i++;
+      while (i < lines.length && !FENCE.test(lines[i])) buf.push(lines[i++]);
+      i++;
+      out.push(`<pre class="code">${esc(buf.join("\n"))}</pre>`);
+    } else if ((m = l.match(HEAD))) {
+      const n = m[1].length;
+      out.push(`<h${n}>${inline(esc(m[2]))}</h${n}>`);
+      i++;
+    } else if (HR.test(l)) {
+      out.push("<hr>");
+      i++;
+    } else if (table(i)) {
+      const head = cells(l);
+      const rows = [];
+      i += 2;
+      while (i < lines.length && /^\s*\|/.test(lines[i])) rows.push(cells(lines[i++]));
+      out.push(
+        `<table><thead><tr>${head.map((c) => `<th>${c}</th>`).join("")}</tr></thead><tbody>${rows
+          .map((r) => `<tr>${r.map((c) => `<td>${c}</td>`).join("")}</tr>`)
+          .join("")}</tbody></table>`
+      );
+    } else if (QUOTE.test(l)) {
+      const buf = [];
+      while (i < lines.length && QUOTE.test(lines[i])) buf.push(lines[i++].replace(QUOTE, ""));
+      out.push(`<blockquote>${md(buf.join("\n"))}</blockquote>`);
+    } else if (LI.test(l)) {
+      const items = [];
+      while (i < lines.length) {
+        const mm = lines[i].match(LI);
+        if (mm) items.push({ ind: mm[1].length, ord: /\d/.test(mm[2]), text: lines[i].slice(mm[0].length) });
+        else if (/^\s+\S/.test(lines[i])) items[items.length - 1].text += " " + lines[i].trim();
+        else break;
+        i++;
+      }
+      out.push(list(items));
+    } else {
+      const buf = [l];
+      i++;
+      while (i < lines.length && !block(i)) buf.push(lines[i++]);
+      out.push(`<p>${inline(esc(buf.join(" ")))}</p>`);
+    }
+  }
+  return out.join("");
+}
+
 function detail(id) {
   const d = st.details[id];
   if (!d) return `<div class="detail muted">Loading…</div>`;
-  const row = (k, v, mono) =>
+  const row = (k, v, kind) =>
     v
-      ? `<div class="k muted">${k}</div><pre${
-          mono ? ' class="mono"' : ""
-        }>${esc(v)}</pre>`
+      ? `<div class="k muted">${k}</div>${
+          kind === "md"
+            ? `<div class="md">${md(v)}</div>`
+            : `<pre${kind ? ' class="mono"' : ""}>${esc(v)}</pre>`
+        }`
       : "";
   return `<div class="detail">
-    ${row("Task", d.task)}
-    ${row("Report", d.note)}
-    ${row("Artifact", d.artifact, true)}
+    ${row("Report", d.worker ? `**${d.worker}**: ${d.note || ""}` : d.note, "md")}
+    ${row("Artifact", d.artifact, "mono")}
+    ${row("Ping", d.ping, "md")}
+    ${row("Task", d.task, "md")}
+    ${row("Feedback", d.feedback, "md")}
+    ${row("Denied", (d.denied || []).join("\n"), "mono")}
     ${row("Tokens", tokFull(d.tokens))}
-    ${row("Feedback", d.feedback)}
-    ${row("Denied", (d.denied || []).join("\n"), true)}
-    ${row("Last reply", d.reply)}
-    ${row("Session", d.session, true)}
+    ${row("Last reply", d.reply, "md")}
+    ${row("Session", d.session, "mono")}
   </div>`;
 }
 
@@ -285,22 +415,41 @@ function render() {
     main.innerHTML = '<div class="empty muted">No runs yet.</div>';
     return;
   }
-  const cards = runs
-    .map(
-      (r) => `
-    <div class="runcard${
-      r.name === st.run ? " sel" : ""
-    }" data-run="${esc(r.name)}">
+  const live = (r) => r.counts.running || r.counts.pending || r.counts.reported;
+  const visible = st.allRuns
+    ? runs
+    : runs.filter((r) => live(r) || r.name === st.run);
+  const hidden = runs.length - visible.length;
+  const cards =
+    visible
+      .map(
+        (r) => `
+    <div class="runcard${r.name === st.run ? " sel" : ""}${
+          live(r) ? " live" : ""
+        }" data-run="${esc(r.name)}">
       <div class="name">${
         r.counts.running ? '<span class="dot busy"></span> ' : ""
       }${esc(r.name)}</div>
       ${bar(r.counts, r.total)}
-      <div class="meta muted">${r.counts.done || 0}/${r.total} done · ${money(
-        r.cost
-      )} · ${ago(r.last)}</div>
+      <div class="meta">${
+        r.counts.running
+          ? `<span style="color:${COLORS.running}">${r.counts.running} running</span> · `
+          : ""
+      }${
+        r.counts.reported
+          ? `<span style="color:${COLORS.reported}">${r.counts.reported} to review</span> · `
+          : ""
+      }<span class="muted">${r.counts.done || 0}/${r.total} done · ${money(
+          r.cost
+        )} · ${ago(r.last)}</span></div>
     </div>`
-    )
-    .join("");
+      )
+      .join("") +
+    (hidden || st.allRuns
+      ? `<button class="chip runtoggle" id="allruns">${
+          st.allRuns ? "hide finished" : `+ ${hidden} finished`
+        }</button>`
+      : "");
   const d = st.data;
   let body = '<div class="empty muted">Select a run.</div>';
   if (d) {
@@ -344,19 +493,12 @@ function render() {
         ${stat(kn(inTok), "tokens in")}
         ${stat(kn(outTok), "tokens out")}
       </div>
-      ${
-        tsum(tk)
-          ? `<div class="muted" style="margin-top:10px;font-size:.9rem">${tokFull(
-              tk
-            )}</div>`
-          : ""
-      }
       ${bar(c, d.total, true)}
       ${
         d.brief
           ? `<details class="brief"${
               st.brief ? " open" : ""
-            }><summary>Brief</summary><pre>${esc(d.brief)}</pre></details>`
+            }><summary>Brief</summary><div class="md">${md(d.brief)}</div></details>`
           : ""
       }
       <div class="chips">${chip("all", d.total)}${ORDER.filter((s) => c[s])
@@ -365,7 +507,9 @@ function render() {
       ${shown
         .map(
           (t) => `
-        <div class="task" data-id="${esc(t.id)}">
+        <div class="task${st.open.has(t.id) ? " open" : ""}" data-id="${esc(
+            t.id
+          )}" style="--c:${COLORS[t.status]}">
           <div class="top">
             <span class="id mono">${esc(t.id)}</span>
             ${pill(t.status)}
@@ -384,9 +528,9 @@ function render() {
             <span class="right muted">
               ${t.todos ? `<span>todos ${esc(t.todos)}</span>` : ""}
               ${t.attempts > 1 ? `<span>attempt ${t.attempts}</span>` : ""}
-              ${tokShort(t.tokens)}
               ${t.cost ? `<span>${money(t.cost)}</span>` : ""}
               <span class="mono">${taskTime(t)}</span>
+              <span class="chev">${st.open.has(t.id) ? "▾" : "▸"}</span>
             </span>
           </div>
           <div class="line">${taskLine(t)}</div>
@@ -413,10 +557,21 @@ function render() {
     el.onclick = () => {
       st.run = el.dataset.run;
       st.open.clear();
+      st.actOpen.clear();
       st.filter = "all";
       st.limit = LIMIT;
       writeHash();
       loadRun();
+    };
+  });
+  main.querySelectorAll(".act").forEach((el) => {
+    el.onclick = (e) => {
+      e.stopPropagation();
+      if (window.getSelection && String(window.getSelection())) return;
+      const id = el.closest(".task").dataset.id;
+      if (st.actOpen.has(id)) st.actOpen.delete(id);
+      else st.actOpen.add(id);
+      render();
     };
   });
   main.querySelectorAll(".chip[data-f]").forEach((el) => {
@@ -432,6 +587,12 @@ function render() {
       st.limit += LIMIT;
       render();
     };
+  const ar = document.getElementById("allruns");
+  if (ar)
+    ar.onclick = () => {
+      st.allRuns = !st.allRuns;
+      render();
+    };
   main.querySelectorAll(".task").forEach((el) => {
     el.onclick = (e) => {
       if (e.target.closest(".detail")) return;
@@ -445,6 +606,23 @@ function render() {
     };
   });
 }
+
+const light = () =>
+  (document.documentElement.dataset.theme ||
+    (matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark")) ===
+  "light";
+function themeButton() {
+  const b = document.getElementById("theme");
+  b.textContent = light() ? "☾" : "☀";
+  b.title = light() ? "dark theme" : "light theme";
+}
+document.getElementById("theme").onclick = () => {
+  const next = light() ? "dark" : "light";
+  document.documentElement.dataset.theme = next;
+  localStorage.setItem("ocq-theme", next);
+  themeButton();
+};
+themeButton();
 
 setInterval(
   () =>

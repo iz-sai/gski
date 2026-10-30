@@ -5,6 +5,7 @@ import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -170,8 +171,31 @@ def create_session(title, agent, model, variant, rules, directory):
     return s, f"{fmt_model(ref)} ({src})"
 
 
-def send_prompt(sid, text):
-    return api("POST", f"/api/session/{sid}/prompt", {"text": text})
+def send_prompt(sid, text, delivery=None):
+    body = {"text": text, **({"delivery": delivery} if delivery else {})}
+    return api("POST", f"/api/session/{sid}/prompt", body)
+
+
+def _loc(directory):
+    return "location[directory]=" + urllib.parse.quote(str(directory))
+
+
+def shells(sid, directory):
+    # running background shell jobs owned by the session; None when the server can't tell
+    out = fetch(f"/api/shell?{_loc(directory)}")
+    if out is None:
+        return None
+    return [s for s in out if s.get("status") == "running" and (s.get("metadata") or {}).get("sessionID") == sid]
+
+
+def kill_shell(shell_id, directory):
+    api("DELETE", f"/api/shell/{shell_id}?{_loc(directory)}")
+
+
+def pending_input(msgs):
+    # user/synthetic input newer than the last assistant turn: the session will wake on it
+    last = next((m for m in msgs if m.get("type") in ("assistant", "user", "synthetic")), None)
+    return bool(last and last["type"] != "assistant")
 
 
 def messages(sid, limit=None, timeout=60):
@@ -218,13 +242,20 @@ def sweep(rd, cfg, by_session, append_fn):
             print(f"{tid} denied {what}")
 
 
-def activity(msgs):
+def activity(msgs, limit=10):
+    out = []
     for m in assistants(msgs):
         for c in reversed(m.get("content", [])):
             if c.get("type") == "tool":
-                inp = (c.get("state") or {}).get("input") or {}
-                what = inp.get("command") or inp.get("path") or inp.get("filePath") or inp.get("pattern") or ""
-                return f"{c.get('name')}: {what}"[:200]
-            if c.get("type") == "text" and c.get("text", "").strip():
-                return c["text"][:200]
-    return ""
+                st = c.get("state") or {}
+                inp = st.get("input") or {}
+                what = inp.get("command") or inp.get("path") or inp.get("filePath") or inp.get("pattern") or inp.get("url") or inp.get("query") or ""
+                out.append({
+                    "text": f"{c.get('name')}: {what}"[:2000],
+                    "status": st.get("status") or "completed",
+                })
+                if len(out) >= limit:
+                    return out
+            elif not out and c.get("type") == "text" and c.get("text", "").strip():
+                out.append({"text": c["text"].strip()[:2000], "status": "completed"})
+    return out

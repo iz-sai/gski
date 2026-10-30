@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <rect width="32" height="32" rx="7" fill="#181b1f"/>
+  <circle cx="25" cy="7" r="3" fill="#45d695"/>
+  <text x="16" y="22" font-family="Inter, system-ui, -apple-system, sans-serif" font-size="13" font-weight="800" fill="#f1efec" text-anchor="middle" letter-spacing="-0.5px">ocq</text>
+</svg>

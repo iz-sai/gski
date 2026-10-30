@@ -19,6 +19,7 @@ State lives in the project, not in your context:
   run.json       agent, model, variant, concurrency, max_attempts, permission
   ledger.jsonl   append-only task state (only ocq writes it; never edit by hand)
   results/<id>.json   worker report: {"status", "artifact", "note"}
+  results/<id>.ping   one-line ping on request; wait-any consumes it
 ```
 
 ## Commands
@@ -31,17 +32,18 @@ gski ocq ls                                # runs in this project
 gski ocq ledger RUN [--status S...] [--all]  # counts + actionable rows
 gski ocq spawn RUN                         # fill free slots with ready pending tasks
 gski ocq spawn RUN ID... [--allow 'shell:ssh host *']... [--model M]
-gski ocq wait-any RUN [--timeout 600]      # block until workers finish
+gski ocq wait-any RUN [--timeout 600]      # block until workers finish or ping
 gski ocq result RUN ID                     # details + worker's last reply
 gski ocq done RUN ID... [--note]
 gski ocq retry RUN ID... [--feedback "what to fix"]
 gski ocq fail RUN ID... [--note]
-gski ocq abort RUN [ID...]                 # running -> pending
+gski ocq abort RUN [ID...]                 # running -> pending, kills its background jobs
+gski ocq send RUN ID "text" [--queue]      # message a running/reported worker; reported -> running
 ```
 
 Task ids are zero-padded (`0001`); `1` also works.
 Statuses: `pending` -> `running` -> `reported` -> `done` | `failed`, or back to
-`pending` by `retry`/`abort`.
+`pending` by `retry`/`abort`, or `reported` -> `running` by `send`.
 
 ## Phase 1: understand, propose, wait
 
@@ -66,9 +68,12 @@ If the user wants a trial, run 1-3 tasks first and show results before the rest.
    reason, never guess). Workers see only the brief and their task text.
 3. Set extra permissions in `run.json` `permission`, same shape as opencode
    config: `{"shell": {"ssh myhost *": "allow"}, "webfetch": "deny"}`.
-   Only what the user approved.
+   Only what the user approved. Standing approval: always add
+   `"external_directory": {"/tmp/opencode/**": "allow"}` (workers read scratch
+   images there; without it Read is auto-denied).
 4. Add tasks. Each task text is self-contained: what to do, which input, where
    the output goes. For many tasks write a jsonl file and `add --file`.
+   Stack back-to-back steps into one task to save worker startup overhead.
 
 ## Phase 3: control loop
 
@@ -106,6 +111,20 @@ Deciding:
   or `run.json`). Never grant permissions on your own.
 - A worker running far longer than its peers: `result` to look, then
   `abort` + retry, or leave it.
+- Workers may run background shell jobs; a worker idle while its job runs is
+  still `running`, not finished. `wait-any` reports it only after the job ends
+  and the worker's last turn is done.
+- Small correction that needs the worker's context: `send RUN ID "..."`.
+  It steers a running worker (`--queue`: after its current turn) or resumes a
+  reported one in the same session. Use `retry --feedback` for a fresh attempt.
+
+Pings (reactive only):
+- A worker pings only when you ask: in the brief, the task text, or a `send`.
+  It never pings on its own. Ask for a status now, or set a condition:
+  `send RUN 0003 "ping when the migration step passes, then continue"`.
+- The worker writes one line to `results/<id>.ping` and keeps working.
+  `wait-any` returns with `NNNN ping | <text>`; the task stays `running`.
+  React if needed, then restart `wait-any` in the background.
 
 Context hygiene:
 - Keep turns short. Don't restate the ledger; `ledger RUN` shows it.

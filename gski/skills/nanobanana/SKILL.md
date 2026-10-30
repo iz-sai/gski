@@ -29,6 +29,7 @@ gski nanobanana "prompt" --image a.png --image b.png    # multi-image compositio
 | `--image-search` | flag | off | enable Google Image Search grounding (visual reference retrieval) |
 | `--thinking` | flag | off | use `medium` thinking level for complex compositions (default: `minimal`) |
 | `--format` | `jpg`,`png`,`webp` | `jpg` | output image format (inferred from `-o` extension unless `--format` given) |
+| `--backend` | `vertex`,`api` | `vertex` | backend to use; vertex reads service account from `~/.config/gski/gemcred.json` |
 | `--output-dir` | path | `./output` | where to save output |
 | `-o`, `--output` | path | none | exact output file path; overrides `--output-dir` and auto-naming |
 

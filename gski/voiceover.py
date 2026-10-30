@@ -1,134 +1,67 @@
-import json
-import os
-import re
 import sys
-import urllib.error
-import urllib.request
 from datetime import datetime
 from pathlib import Path
 
-API_BASE = "https://api.elevenlabs.io/v1"
+from gski.voiceover_lib import elevenlabs, gemini
 
-MODELS = {
-    "v4": "eleven_v4",
-    "multilingual": "eleven_multilingual_v2",
-    "flash": "eleven_flash_v2_5",
-}
-
-# Blain - Conversational Ad Voice
-DEFAULT_VOICE = "jHprmvvyQreWpRuutdmV"
-
-VOICE_ID_RE = re.compile(r"^[A-Za-z0-9]{20}$")
-
-
-def _api_key():
-    key = os.environ.get("ELEVENLABS_API_KEY") or os.environ.get("ELEVEN_LABS_API_KEY")
-    if not key:
-        print("error: ELEVENLABS_API_KEY env var required", file=sys.stderr)
-        sys.exit(1)
-    return key
-
-
-def _request(url, key, method="GET", payload=None):
-    data = json.dumps(payload).encode() if payload is not None else None
-    headers = {"xi-api-key": key}
-    if data:
-        headers["Content-Type"] = "application/json"
-    req = urllib.request.Request(url, data=data, headers=headers, method=method)
-    return urllib.request.urlopen(req)
-
-
-def list_voices(key):
-    with _request(f"{API_BASE}/voices", key) as resp:
-        data = json.load(resp)
-    for v in data.get("voices", []):
-        print(f"{v['voice_id']}\t{v['name']}\t{v.get('category', '')}")
-
-
-def resolve_voice(voice, key):
-    if VOICE_ID_RE.match(voice):
-        return voice
-    with _request(f"{API_BASE}/voices", key) as resp:
-        data = json.load(resp)
-    voices = data.get("voices", [])
-    for v in voices:
-        if v["name"].lower() == voice.lower():
-            return v["voice_id"]
-    for v in voices:
-        if voice.lower() in v["name"].lower():
-            return v["voice_id"]
-    print(f"error: voice not found in library: {voice}", file=sys.stderr)
-    sys.exit(1)
+PROVIDERS = {"elevenlabs": elevenlabs, "gemini": gemini}
 
 
 def register(subparsers):
     p = subparsers.add_parser(
         "voiceover",
         aliases=["tts"],
-        help="text-to-speech voiceover via ElevenLabs",
+        help="text-to-speech voiceover (ElevenLabs, Gemini)",
     )
-    p.add_argument("text", nargs="?", help="text to synthesize (v4 audio tags allowed)")
+    p.add_argument("text", nargs="?", help="text to synthesize (tag syntax depends on provider)")
+    p.add_argument(
+        "--provider",
+        choices=list(PROVIDERS),
+        default="elevenlabs",
+        help="TTS backend (default: elevenlabs)",
+    )
     p.add_argument(
         "--voice",
-        default=DEFAULT_VOICE,
-        help="voice name (searches your library) or voice_id (default: Blain)",
+        help="elevenlabs: library name or voice_id (default: Blain); gemini: prebuilt name or voice_... id (default: Iapetus)",
     )
     p.add_argument(
         "--model",
-        choices=list(MODELS.keys()),
-        default="v4",
-        help="model: v4 (expressive), multilingual (stable), flash (fast/cheap) (default: v4)",
+        help="elevenlabs: v4|multilingual|flash (default: v4); gemini: flash (default)",
     )
-    p.add_argument("--stability", type=float, default=0.1, help="0-1, lower = more expressive (default: 0.1)")
-    p.add_argument("--style", type=float, default=1.0, help="0-1, style exaggeration (default: 1.0)")
-    p.add_argument("--similarity", type=float, default=1.0, help="0-1, adherence to voice (default: 1.0)")
-    p.add_argument("--speed", type=float, default=1.2, help="0.7-1.2, native speech speed (default: 1.2)")
-    p.add_argument("--no-speaker-boost", action="store_false", dest="speaker_boost", help="disable speaker similarity boost")
     p.add_argument(
         "--format",
-        default="mp3_44100_128",
-        help="output_format codec_rate_bitrate (default: mp3_44100_128)",
+        help="elevenlabs: codec_rate_bitrate (default: mp3_44100_128); gemini: mp3|wav (default: mp3)",
     )
     p.add_argument("--output-dir", default="./output", help="output directory (default: ./output)")
     p.add_argument("-o", "--output", metavar="FILE", help="output file path (overrides --output-dir and auto-naming)")
-    p.add_argument("--list-voices", action="store_true", help="list available voices and exit")
+    p.add_argument("--list-voices", action="store_true", help="list voices of the provider and exit")
+    for mod in PROVIDERS.values():
+        mod.add_args(p)
     p.set_defaults(func=run)
 
 
+def _reject_foreign_flags(args):
+    flags = {"--" + d.replace("_", "-"): d for name, mod in PROVIDERS.items() if name != args.provider for d in mod.FLAGS}
+    for flag, dest in flags.items():
+        if getattr(args, dest) is not None:
+            print(f"error: {flag} is not supported by provider {args.provider}", file=sys.stderr)
+            sys.exit(1)
+
+
 def run(args):
-    key = _api_key()
+    provider = PROVIDERS[args.provider]
+    _reject_foreign_flags(args)
 
     if args.list_voices:
-        list_voices(key)
+        provider.list_voices()
         return
 
     if not args.text:
         print("error: text is required", file=sys.stderr)
         sys.exit(1)
 
-    voice_id = resolve_voice(args.voice, key)
+    audio, ext = provider.synthesize(args)
 
-    payload = {
-        "text": args.text,
-        "model_id": MODELS[args.model],
-        "voice_settings": {
-            "stability": args.stability,
-            "similarity_boost": args.similarity,
-            "style": args.style,
-            "use_speaker_boost": args.speaker_boost,
-            "speed": args.speed,
-        },
-    }
-
-    url = f"{API_BASE}/text-to-speech/{voice_id}?output_format={args.format}"
-    try:
-        with _request(url, key, method="POST", payload=payload) as resp:
-            audio = resp.read()
-    except urllib.error.HTTPError as e:
-        print(f"error: HTTP {e.code}: {e.read().decode(errors='replace')}", file=sys.stderr)
-        sys.exit(1)
-
-    ext = args.format.split("_")[0]
     if args.output:
         out_path = Path(args.output)
         out_path.parent.mkdir(parents=True, exist_ok=True)

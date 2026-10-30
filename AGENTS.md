@@ -20,12 +20,15 @@ gski/
     ├── omni.py             # gski omni — Gemini Omni Flash video gen/edit (stateful jobs)
     ├── omni_lib/           # omni job state, interactions/video plumbing
     ├── tgscope.py          # gski tgscope — search/read Telegram chat JSON exports
-    ├── voiceover.py        # gski voiceover — ElevenLabs text-to-speech
+    ├── voiceover.py        # gski voiceover — text-to-speech (ElevenLabs, Gemini)
+    ├── voiceover_lib/      # per-provider backends: elevenlabs.py, gemini.py
     ├── websearch.py        # gski websearch — web search via Gemini grounding
     ├── youtube_scope.py    # gski youtube-scope — YouTube data extraction via yt-dlp
     ├── setup.py            # gski setup <dir> — symlink skill folders (or --copy)
     └── skills/
         ├── audioscope/
+        │   └── SKILL.md
+        ├── decision-frameworks/  # prompt-only, no CLI
         │   └── SKILL.md
         ├── deepresearch/
         │   └── SKILL.md
@@ -73,11 +76,14 @@ gski ocq ls | ledger RUN [--status S...] [--all]
 gski ocq spawn RUN [ID...] [--allow 'action:pattern']... [--agent A] [--model M] [--variant V]
 gski ocq wait-any RUN [--timeout S] | result RUN ID
 gski ocq done|fail RUN ID... [--note] | retry RUN ID... [--feedback] | abort RUN [ID...]
+gski ocq send RUN ID "text" [--queue]   # message a running/reported worker; reported -> running
 gski ocq dash [--port 4097]   # read-only web dashboard; projects registry in ~/.local/state/ocq/projects
 gski tgscope info|search|show <export-dir-or-result.json> ...
   search "query" [--regex] [--case-sensitive] [--since YYYY-MM-DD] [--until YYYY-MM-DD] [--media KIND] [--min-reactions N] [--limit N] [--width N] [--json]
   show <ids> [--context N] [--json]   # ids: 12 | 12,15 | 10-20
-gski voiceover "text" [--voice NAME_OR_ID] [--model v4|multilingual|flash] [--stability N] [--style N] [--similarity N] [--speed N] [--no-speaker-boost] [--format FMT] [-o FILE] [--output-dir DIR] [--list-voices]
+gski voiceover "text" [--provider elevenlabs|gemini] [--voice NAME_OR_ID] [--model M] [--format FMT] [-o FILE] [--output-dir DIR] [--list-voices]
+  elevenlabs: [--model v4|multilingual|flash] [--stability N] [--style N] [--similarity N] [--speed N] [--no-speaker-boost]
+  gemini:     [--direction TEXT] [--format mp3|wav]
 gski websearch "query" [--sources]
 gski youtube-scope <target> [--comments] [--transcript] [--limit N] [--archive FILE] [--audio] [--video] [--res N] [--audio-quality N] [--output-dir DIR] [--update]
 gski deepresearch start "query" [--file F]... [--max] [--plan] [--output FILE] [--wait]
@@ -98,7 +104,7 @@ gski setup <target-dir> [--copy]
 - `Pillow` — image handling
 - Requires `GEMINI_API_KEY` env var
 - Requires `OPENAI_API_KEY` env var for gptimage2
-- Requires `ELEVENLABS_API_KEY` env var for voiceover (accepts `ELEVEN_LABS_API_KEY`)
+- Requires `ELEVENLABS_API_KEY` env var for voiceover with elevenlabs (accepts `ELEVEN_LABS_API_KEY`); `GEMINI_API_KEY` + `ffmpeg` (mp3) for `--provider gemini`
 - Requires `yt-dlp` for youtube-scope
 - Requires `ffmpeg`/`ffprobe` for audioscope
 - Vertex backend (`gski omni --backend vertex`) reads a service account json from `~/.config/gski/gemcred.json`

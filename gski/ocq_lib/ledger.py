@@ -138,6 +138,10 @@ def build_prompt(run, t):
         parts += ["", "Feedback on the previous attempt:", t["feedback"]]
     parts += [
         "",
+        f"Ping: only when the orchestrator explicitly asks for it (in the brief, the task, or a message), "
+        f"write one line to {rel}/results/{t['id']}.ping at the point it asks for, then keep working. "
+        "Never ping on your own initiative.",
+        "",
         f"When finished, write {rel}/results/{t['id']}.json:",
         '{"status": "done" | "failed", "artifact": "<path or short value>", "note": "<one line>"}',
         "Then reply with one line.",
@@ -158,6 +162,8 @@ def summary(tasks):
 def row(t):
     if t["status"] in ("reported", "done", "failed") and t.get("worker"):
         info = f"{t['worker']} {t.get('artifact') or '-'} | {t.get('note') or ''}"
+    elif t["status"] == "running" and t.get("ping"):
+        info = f"ping: {t['ping']}"
     else:
         info = t.get("task", "")
     extra = f" [denied {len(t['denied'])}]" if t.get("denied") else ""

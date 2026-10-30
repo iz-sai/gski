@@ -4,6 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>ocq</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <script>try { const t = localStorage.getItem("ocq-theme"); if (t) document.documentElement.dataset.theme = t; } catch {}</script>
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
@@ -12,6 +14,7 @@
       <div class="brand">
         <span id="srv" class="dot" title="server status"></span>
         <span>ocq</span>
+        <button id="theme" class="theme" title="toggle theme"></button>
       </div>
       <div id="projects"></div>
     </aside>
