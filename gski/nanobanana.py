@@ -151,6 +151,17 @@ def save_images(response, output_dir, ext=None, output=None):
     return saved
 
 
+def _vertex_credentials():
+    for c in (
+        os.environ.get("GSKI_VERTEX_CREDENTIALS"),
+        os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"),
+        VERTEX_CRED_PATH,
+    ):
+        if c and Path(c).exists():
+            return Path(c).resolve()
+    return None
+
+
 def register(subparsers):
     p = subparsers.add_parser("nanobanana", help="generate or edit images via Gemini")
     p.add_argument("prompt", help="text prompt for generation or editing")
@@ -215,21 +226,10 @@ def register(subparsers):
     p.add_argument(
         "--backend",
         choices=["vertex", "api"],
-        default=os.environ.get("GSKI_NANOBANANA_BACKEND") or "vertex",
-        help="backend to use: vertex (default) or api",
+        default=os.environ.get("GSKI_NANOBANANA_BACKEND") or ("vertex" if _vertex_credentials() else "api"),
+        help="backend to use: vertex (default when gemcred.json exists) or api",
     )
     p.set_defaults(func=run)
-
-
-def _vertex_credentials():
-    for c in (
-        os.environ.get("GSKI_VERTEX_CREDENTIALS"),
-        os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"),
-        VERTEX_CRED_PATH,
-    ):
-        if c and Path(c).exists():
-            return Path(c).resolve()
-    return None
 
 
 def make_client(backend="vertex"):
