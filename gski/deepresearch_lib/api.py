@@ -20,7 +20,8 @@ def make_client():
         print("error: GEMINI_API_KEY env var required", file=sys.stderr)
         sys.exit(1)
     from google import genai
-    return genai.Client()
+    from google.genai import types
+    return genai.Client(http_options=types.HttpOptions(api_version="v1beta"))
 
 
 def _interactions(client):

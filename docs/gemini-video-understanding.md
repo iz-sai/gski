@@ -232,21 +232,21 @@ You can pass YouTube URLs directly to Gemini API as part of your request as foll
 
 - For the free tier, you can't upload more than 8 hours of YouTube video per day.
 - For the paid tier, there is no limit based on video length.
-- For models prior to Gemini 2.5, you can upload only 1 video per request. For Gemini 2.5 and later models, you can upload a maximum of 10 videos per request.
+- You can upload a maximum of 10 videos per request.
 - You can only upload public videos (not private or unlisted videos).
 
 ## Agentic video understanding
 
 By default, video inputs use static processing (extracting frames at 1 FPS).
-Gemini 3.8 Flash, 3.6 Flash, and 3.5 Flash Lite models also support
+Gemini 3.8 Flash (default) and Gemini 4 Argon also support
 **agentic video understanding**, where the model dynamically explores the video
 timeline, selectively inspecting transcripts and adaptively adjusting frame
 rates and resolution on the fly based on the prompt.
 
 | **Mode** | **Description** | **Supported models** |
 |---|---|---|
-| **Static** (default) | Extracts frames at a fixed rate (1 FPS) and places them into context in a single pass. Works well for short clips. | All Gemini models |
-| **Agentic** | The model dynamically navigates the video timeline, loading only the content it needs based on the prompt. Up to 88% more token-efficient and \~7% higher quality on long-form content. | Gemini 3.8 Flash, 3.6 Flash, 3.5 Flash Lite |
+| **Static** (default) | Extracts frames at a fixed rate (1 FPS) and places them into context in a single pass. Works well for short clips. | Gemini 3.8 Flash, Gemini 4 Argon |
+| **Agentic** | The model dynamically navigates the video timeline, loading only the content it needs based on the prompt. Up to 88% more token-efficient and \~7% higher quality on long-form content. | Gemini 3.8 Flash, Gemini 4 Argon |
 
 ### Choose a processing mode
 
@@ -675,11 +675,11 @@ Gemini supports the following video format MIME types:
 
 ## Technical details about videos
 
-- **Supported models and context** : All Gemini models can process video data.
+- **Supported models and context** : `gemini-3.8-flash` (default) and `gemini-4-argon` process video data.
   - Models with a 1M context window can process videos up to 3 hours long by default (at low media resolution), or up to 1 hour long at high media resolution.
-- **Processing modes** : Gemini 3.8 Flash, 3.6 Flash, 3.5 Flash Lite, and later models support two video processing modes:
-  - **Static**: Frames are extracted at 1 FPS and placed into context (default for all models). Audio is processed at 1Kbps (single channel). Timestamps are added every second. Best for short clips or when every frame matters (such as frame-by-frame inspection). Note that fast action sequences might lose detail due to the 1 FPS sampling rate.
-  - **Agentic** : The model dynamically navigates the video, loading transcript and/or frames and/or audio on demand. This uses up to 88% fewer tokens for long-form content, though navigation may slightly increase Time to First Token (TTFT) on short clips (\<5 minutes) due to internal reasoning and tool round-trips before generation begins. Best for long-form videos to optimize token costs and response quality. Supported on Gemini 3.8 Flash, 3.6 Flash, and 3.5 Flash Lite. See [Agentic video understanding](https://ai.google.dev/gemini-api/docs/video-understanding#agentic-video-understanding) for details.
+- **Processing modes** : `gemini-3.8-flash` and `gemini-4-argon` support two video processing modes:
+  - **Static**: Frames are extracted at 1 FPS and placed into context (default). Audio is processed at 1Kbps (single channel). Timestamps are added every second. Best for short clips or when every frame matters (such as frame-by-frame inspection). Note that fast action sequences might lose detail due to the 1 FPS sampling rate.
+  - **Agentic** : The model dynamically navigates the video, loading transcript and/or frames and/or audio on demand. This uses up to 88% fewer tokens for long-form content, though navigation may slightly increase Time to First Token (TTFT) on short clips (\<5 minutes) due to internal reasoning and tool round-trips before generation begins. Best for long-form videos to optimize token costs and response quality. Supported on `gemini-3.8-flash` and `gemini-4-argon`. See [Agentic video understanding](https://ai.google.dev/gemini-api/docs/video-understanding#agentic-video-understanding) for details.
 - **Token calculation (static mode)** : Each second of video is tokenized as follows:
   - Individual frames (sampled at 1 FPS):
     - If `media_resolution` is set to low, frames are tokenized at 66 tokens per frame.

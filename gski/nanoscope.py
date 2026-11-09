@@ -1,150 +1,39 @@
-import base64
-import io
-import json
 import os
-import sys
-import urllib.request
-from datetime import datetime
-from pathlib import Path
 
-from .models import GEMINI_TEXT
-
-MODELS = {k: GEMINI_TEXT[k] for k in ("flash", "pro")}
-
-DETECT_SUFFIX = " The box_2d should be [ymin, xmin, ymax, xmax] normalized to 0-1000."
-
-genai = None
-types = None
-np = None
-Image = None
-ImageDraw = None
-
-
-def _init_deps():
-    global genai, types, np, Image, ImageDraw
-    if genai is None:
-        import numpy as _np
-        from google import genai as _genai
-        from google.genai import types as _types
-        from PIL import Image as _Image, ImageDraw as _ImageDraw
-
-        genai = _genai
-        types = _types
-        np = _np
-        Image = _Image
-        ImageDraw = _ImageDraw
-
-
-def build_config(args):
-    kwargs = {
-        "automatic_function_calling": types.AutomaticFunctionCallingConfig(
-            disable=True
-        )
-    }
-
-    if args.detect:
-        kwargs["response_mime_type"] = "application/json"
-
-    if args.segment:
-        kwargs["thinking_config"] = types.ThinkingConfig(thinking_budget=0)
-
-    return types.GenerateContentConfig(**kwargs)
-
-
-def build_contents(prompt, image_paths, urls):
-    contents = []
-
-    for p in image_paths:
-        contents.append(Image.open(p))
-
-    for url in urls:
-        req = urllib.request.Request(url, headers={"User-Agent": "nanoscope/1.0"})
-        with urllib.request.urlopen(req) as resp:
-            data = resp.read()
-            content_type = resp.headers.get_content_type() or "image/jpeg"
-        contents.append(types.Part.from_bytes(data=data, mime_type=content_type))
-
-    contents.append(prompt)
-    return contents
-
-
-def parse_json(text):
-    lines = text.splitlines()
-    for i, line in enumerate(lines):
-        if line.strip().startswith("```json") or line.strip() == "```json":
-            rest = "\n".join(lines[i + 1 :])
-            return rest.split("```")[0]
-    return text
-
-
-def run_segment(response, images, output_dir):
-    output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-
-    im = images[0].copy()
-    im.thumbnail([1024, 1024], Image.Resampling.LANCZOS)
-
-    items = json.loads(parse_json(response.text), strict=False)
-    saved = []
-
-    for i, item in enumerate(items):
-        box = item["box_2d"]
-        y0 = int(box[0] / 1000 * im.size[1])
-        x0 = int(box[1] / 1000 * im.size[0])
-        y1 = int(box[2] / 1000 * im.size[1])
-        x1 = int(box[3] / 1000 * im.size[0])
-
-        if y0 >= y1 or x0 >= x1:
-            continue
-
-        png_str = item.get("mask", "")
-        if not png_str.startswith("data:image/png;base64,"):
-            continue
-
-        png_str = png_str.removeprefix("data:image/png;base64,")
-        mask_data = base64.b64decode(png_str)
-        mask = Image.open(io.BytesIO(mask_data))
-        mask = mask.resize((x1 - x0, y1 - y0), Image.Resampling.BILINEAR)
-
-        mask_array = np.array(mask)
-
-        overlay = Image.new("RGBA", im.size, (0, 0, 0, 0))
-        overlay_draw = ImageDraw.Draw(overlay)
-
-        color = (255, 255, 255, 200)
-        for y in range(y0, y1):
-            for x in range(x0, x1):
-                if mask_array[y - y0, x - x0] > 128:
-                    overlay_draw.point((x, y), fill=color)
-
-        label = item.get("label", f"mask_{i}")
-        safe_label = label.replace(" ", "_").replace("/", "_")
-
-        mask_path = output_dir / f"{ts}_{safe_label}_{i}_mask.png"
-        overlay_path = output_dir / f"{ts}_{safe_label}_{i}_overlay.png"
-
-        mask.save(mask_path)
-        composite = Image.alpha_composite(im.convert("RGBA"), overlay)
-        composite.save(overlay_path)
-
-        saved.append(mask_path)
-        saved.append(overlay_path)
-
-    return saved
+from .models import GEMINI_TEXT as MODELS
+from .nanoscope_lib.api import (
+    DETECT_SUFFIX,
+    MEDIA_RESOLUTIONS,
+    SEGMENT_SUFFIX,
+    TARGET_HEIGHTS,
+    build_schemas,
+    die,
+    extract_text,
+    prepare_image_part,
+    prepare_video_part,
+    run_interaction,
+    save_segments,
+)
 
 
 def register(subparsers):
     p = subparsers.add_parser(
-        "nanoscope", help="understand and analyze images via Gemini"
+        "nanoscope", help="understand and analyze images and videos via Gemini"
     )
-    p.add_argument("prompt", help="text prompt or question about the image(s)")
+    p.add_argument("prompt", help="text prompt or question about the media")
     p.add_argument(
         "--image",
         action="append",
         default=[],
         metavar="FILE",
-        help="input image file (repeatable)",
+        help="input image file or URL (repeatable)",
+    )
+    p.add_argument(
+        "--video",
+        action="append",
+        default=[],
+        metavar="FILE",
+        help="input video file or URL (repeatable)",
     )
     p.add_argument(
         "--url",
@@ -156,8 +45,46 @@ def register(subparsers):
     p.add_argument(
         "--model",
         choices=list(MODELS.keys()),
-        default="flash",
-        help="model to use (default: flash)",
+        default="3-8",
+        help="model: 3-8 (gemini-3.8-flash, default) or argon (gemini-4-argon)",
+    )
+    p.add_argument(
+        "--media-res",
+        choices=list(MEDIA_RESOLUTIONS),
+        default="low",
+        help="API media token resolution: low (default), medium, high, ultra_high",
+    )
+    p.add_argument(
+        "--fps",
+        type=float,
+        default=1.0,
+        help="video frame sampling rate (default: 1.0)",
+    )
+    p.add_argument(
+        "--target-res",
+        choices=list(TARGET_HEIGHTS.keys()),
+        default="480p",
+        help="local video transcode height before upload (default: 480p)",
+    )
+    p.add_argument(
+        "--agentic",
+        action="store_true",
+        help="use agentic video processing instead of static",
+    )
+    p.add_argument(
+        "--no-audio",
+        action="store_true",
+        help="strip audio track when transcoding local video (default: keep audio)",
+    )
+    p.add_argument(
+        "--start",
+        metavar="TIME",
+        help="video clip start offset for static mode (e.g. 1200 or 20:00)",
+    )
+    p.add_argument(
+        "--end",
+        metavar="TIME",
+        help="video clip end offset for static mode (e.g. 1500 or 25:00)",
     )
     p.add_argument(
         "--detect",
@@ -167,7 +94,7 @@ def register(subparsers):
     p.add_argument(
         "--segment",
         action="store_true",
-        help="segmentation mode (mask + overlay PNGs)",
+        help="segmentation mode (polygon mask + overlay PNGs)",
     )
     p.add_argument(
         "--output-dir",
@@ -179,57 +106,71 @@ def register(subparsers):
 
 def run(args):
     if args.detect and args.segment:
-        print("error: --detect and --segment are mutually exclusive", file=sys.stderr)
-        sys.exit(1)
+        die("--detect and --segment are mutually exclusive")
 
-    if not args.image and not args.url:
-        print("error: at least one --image or --url required", file=sys.stderr)
-        sys.exit(1)
+    images = list(args.image) + list(args.url)
+    videos = list(args.video)
 
-    for p in args.image:
-        if not os.path.isfile(p):
-            print(f"error: image not found: {p}", file=sys.stderr)
-            sys.exit(1)
+    if not images and not videos:
+        die("provide at least one --image, --video, or --url")
+
+    if (args.detect or args.segment) and videos:
+        die("--detect and --segment only support --image inputs")
+
+    if args.segment and not args.image:
+        die("--segment requires at least one local --image file")
+
+    if args.agentic and (args.start is not None or args.end is not None):
+        die("--start and --end are only supported in static mode (omit --agentic)")
 
     if not os.environ.get("GEMINI_API_KEY"):
-        print("error: GEMINI_API_KEY env var required", file=sys.stderr)
-        sys.exit(1)
+        die("GEMINI_API_KEY env var required")
 
-    _init_deps()
+    from google import genai
+    from google.genai import types
 
     prompt = args.prompt
     if args.detect:
         prompt += DETECT_SUFFIX
+    elif args.segment:
+        prompt += SEGMENT_SUFFIX
 
-    images = [Image.open(p) for p in args.image]
+    # Docs: for video, place text prompt AFTER video; for image-only, place text BEFORE images.
+    parts = []
+    if not videos:
+        parts.append({"type": "text", "text": prompt})
+        for img in images:
+            parts.append(prepare_image_part(img, args.media_res))
+    else:
+        for vid in videos:
+            parts.append(prepare_video_part(vid, args))
+        for img in images:
+            parts.append(prepare_image_part(img, args.media_res))
+        parts.append({"type": "text", "text": prompt})
 
-    if args.segment and images:
-        for im in images:
-            im.thumbnail([1024, 1024], Image.Resampling.LANCZOS)
+    kwargs = {
+        "model": MODELS[args.model],
+        "input": parts,
+    }
 
-    client = genai.Client()
-    model = MODELS[args.model]
-    contents = build_contents(prompt, args.image, args.url)
-    config = build_config(args)
+    if args.detect or args.segment:
+        kwargs["response_format"] = {
+            "type": "text",
+            "mime_type": "application/json",
+            "schema": build_schemas(segment=args.segment),
+        }
+    if args.segment:
+        kwargs["generation_config"] = {"thinking_level": "low"}
 
-    response = client.models.generate_content(
-        model=model,
-        contents=contents,
-        config=config,
-    )
+    client = genai.Client(http_options=types.HttpOptions(api_version="v1beta"))
+    interaction = run_interaction(client, kwargs, is_video=bool(videos))
+    text = extract_text(interaction)
 
     if args.segment:
-        if not images:
-            print(
-                "error: --segment requires at least one --image (local file)",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-        saved = run_segment(response, images, args.output_dir)
+        saved = save_segments(text, args.image[0], args.output_dir)
         if not saved:
-            print("error: no segmentation masks produced", file=sys.stderr)
-            sys.exit(1)
+            die("no segmentation masks produced")
         for path in saved:
             print(path)
     else:
-        print(response.text)
+        print(text)

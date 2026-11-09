@@ -24,7 +24,7 @@ VERTEX_CRED_PATH = Path.home() / ".config" / "gski" / "gemcred.json"
 
 
 def default_backend():
-    return os.environ.get("GSKI_OMNI_BACKEND") or "api"
+    return os.environ.get("GSKI_OMNI_BACKEND") or "vertex"
 
 
 def _vertex_credentials():
@@ -43,7 +43,7 @@ def _vertex_credentials():
     sys.exit(1)
 
 
-def make_client(backend="api"):
+def make_client(backend="vertex"):
     if backend != "vertex":
         return make_api_client()
     from google import genai
@@ -61,7 +61,7 @@ def make_client(backend="api"):
         vertexai=True,
         project=project,
         location=os.environ.get("GOOGLE_CLOUD_LOCATION") or VERTEX_LOCATION,
-        http_options=types.HttpOptions(headers={"Api-Revision": VERTEX_API_REVISION}),
+        http_options=types.HttpOptions(api_version="v1beta", headers={"Api-Revision": VERTEX_API_REVISION}),
     )
 
 
@@ -89,7 +89,7 @@ def upload_video(client, path):
     return uri, mime
 
 
-def build_input(prompt, images, videos, client, backend="api"):
+def build_input(prompt, images, videos, client, backend="vertex"):
     if not images and not videos:
         return prompt
 
@@ -117,7 +117,7 @@ def build_input(prompt, images, videos, client, backend="api"):
     return parts
 
 
-def build_response_format(aspect_ratio, resolution, duration=None, backend="api"):
+def build_response_format(aspect_ratio, resolution, duration=None, backend="vertex"):
     fmt = {"type": "video", "resolution": resolution}
     if backend != "vertex":
         fmt["delivery"] = "uri"

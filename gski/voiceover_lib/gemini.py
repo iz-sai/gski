@@ -113,12 +113,13 @@ def synthesize(args):
     fmt = _format(args)
 
     from google import genai
+    from google.genai import types
 
     item = {"type": "text", "text": args.text}
     if args.direction:
         item["annotations"] = [{"type": "speech_metadata", "style": args.direction}]
 
-    client = genai.Client()
+    client = genai.Client(http_options=types.HttpOptions(api_version="v1beta"))
     interaction = client.interactions.create(
         model=MODELS[model],
         input=[{"type": "user_input", "content": [item]}],

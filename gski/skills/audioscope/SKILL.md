@@ -60,6 +60,8 @@ gski audioscope --audio part1.mp3 --audio part2.mp3 --diarize
 
 ### Output layout
 
+sounds: `--like TEXT`, `--context TEXT`, `--extract`, `--pad SECS` (0.5), `--model 3-8|argon` (3-8).
+
 **All diarize modes produce** `<output-dir>/audioscope_<TS>.json` — legacy dict shape
 `{"summary": "", "segments": [{"speaker": "...", "timestamp": "...", "content": "..."}, ...]}`.
 This is the file downstream scripts should read.

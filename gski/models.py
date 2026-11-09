@@ -1,7 +1,6 @@
 GEMINI_TEXT = {
-    "flash": "gemini-3.8-flash",
-    "flash-lite": "gemini-3.1-flash-lite-preview",
-    "pro": "gemini-3.1-pro-preview"
+    "3-8": "gemini-3.8-flash",
+    "argon": "gemini-4-argon",
 }
 
 GEMINI_TRANSCRIBE = "gemini-3.5-transcribe"
@@ -17,11 +16,11 @@ GEMINI_DEEP_RESEARCH = {
 }
 
 GEMINI_OMNI = {
-    "flash": "gemini-omni-1.1-flash",
+    "flash": "gemini-omni-1.2-flash",
 }
 
 GEMINI_OMNI_VERTEX = {
-    "flash": "gemini-omni-1.1-flash-preview",
+    "flash": "gemini-omni-1.2-flash",
 }
 
 OPENAI_IMAGE = [

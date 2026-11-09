@@ -1,55 +1,39 @@
 ---
 name: gski nanoscope
-description: Understand and analyze images — captioning, comparison, object detection, segmentation
+description: Understand and analyze images and videos with Gemini (captioning, timestamps, object detection, segmentation). Use ONLY when explicitly asked by the user; do not invoke proactively.
 ---
 
-## How it works
-
-`gski nanoscope` sends images + a text prompt to Gemini's multimodal models and returns text or structured analysis. Unlike nanobanana (which generates images), nanoscope analyzes existing images.
-
-Default model is `gemini-3.8-flash`.
-
-## Commands
+Use `gski nanoscope` ONLY when explicitly requested by the user. Do not invoke on your own.
 
 ```bash
-# Describe / caption
-gski nanoscope "what's in this image?" --image photo.png
-gski nanoscope "describe the mood and composition" --image painting.jpg
+# Images
+gski nanoscope "PROMPT" --image FILE [--image FILE]... [--url URL]...
+gski nanoscope "PROMPT" --image FILE --detect
+gski nanoscope "PROMPT" --image FILE --segment [--output-dir DIR]
 
-# Compare multiple images
-gski nanoscope "what changed between these two?" --image before.png --image after.png
-
-# Analyze image from URL
-gski nanoscope "what is this?" --url https://example.com/image.jpg
-
-# Object detection (JSON bounding boxes)
-gski nanoscope "detect all objects" --image scene.png --detect
-
-# Segmentation (mask + overlay PNGs saved to disk)
-gski nanoscope "segment the wooden and glass items" --image room.png --segment
+# Videos (defaults: --model 3-8 --target-res 480p --fps 1.0 --media-res low, audio kept, static mode)
+gski nanoscope "PROMPT" --video FILE
+gski nanoscope "PROMPT" --video FILE --agentic
+gski nanoscope "PROMPT" --video FILE --start 00:00 --end 30:00
+gski nanoscope "PROMPT" --video FILE --fps 0.5 --target-res 360p --no-audio --media-res high --model argon
 ```
 
-## Options
+Flags:
+- `--image FILE` (repeatable): local image or URL
+- `--video FILE` (repeatable): local video, public HTTPS URL, or YouTube URL
+- `--url URL` (repeatable): image URL
+- `--model 3-8|argon`: `gemini-3.8-flash` (default `3-8`) or `gemini-4-argon` (`argon`)
+- `--media-res low|medium|high|ultra_high`: API frame token budget (default `low`=66 tok/frame, `high`=258 tok/frame)
+- `--fps FLOAT`: local transcode & static sampling rate (default `1.0`)
+- `--target-res 360p|480p|720p|1080p|original`: local ffmpeg height before Files API upload (default `480p`)
+- `--agentic`: dynamic timeline navigation (`processing: "agentic"`, up to 88% fewer tokens on long videos)
+- `--no-audio`: strip audio track during transcode (saves 32 tok/s)
+- `--start TIME` / `--end TIME`: clip window in seconds or `MM:SS` (static mode only; reuses cached upload)
+- `--detect`: JSON object detection (`boxes` with `box_2d` `[ymin, xmin, ymax, xmax]` 0-1000 and `label`)
+- `--segment`: polygon segmentation masks + overlays saved to `--output-dir` (default `./output`), prints paths
+- `--output-dir DIR`: output directory for `--segment`
 
-| Flag | Values | Default | Notes |
-|------|--------|---------|-------|
-| `--image FILE` | repeatable | none | local input image(s) |
-| `--url URL` | repeatable | none | image URL(s) to fetch and analyze |
-| `--model` | `flash` | `flash` | model selection |
-| `--detect` | flag | off | object detection mode (JSON output) |
-| `--segment` | flag | off | segmentation mode (saves PNGs) |
-| `--output-dir` | path | `./nanoscope-output` | where segmentation saves masks/overlays |
-
-## Output
-
-- **Default mode**: text to stdout
-- **`--detect`**: JSON array of objects with `box_2d` ([ymin, xmin, ymax, xmax] normalized 0-1000) and `label`
-- **`--segment`**: saves mask PNGs and overlay PNGs to `--output-dir`, prints file paths to stdout. Requires `--image` (local file).
-
-## Notes
-
-- `--detect` and `--segment` are mutually exclusive
-- At least one `--image` or `--url` is required
-- `--segment` requires at least one local `--image` (not `--url`)
-- Images are thumbnailed to 1024x1024 before segmentation
-- Mix `--image` and `--url` freely in describe/compare mode
+Behavior:
+- Local videos transcode via `ffmpeg` (auto-uses Intel VAAPI `/dev/dri/renderD128` + `-skip_frame noref` when available, fallback `libx264 -crf 28 -preset veryfast`; skipped if input `.mp4` is already `<= target-res` and `<= fps`) + mono 16kHz AAC `24k` audio, then upload via Gemini Files API (`client.files.upload`, max 2GB/20GB; raw HTTPS URLs cap at ~15MB) keyed by `display_name = <sha1>-<stem>_<res>_<fps>fps_a1.mp4`. Files API entries auto-expire in 48h and are reused across calls.
+- Progress logs to `stderr` at 10% intervals.
+- For dense timestamp extraction across long videos (>30m), keep static mode and run 20-30m windows with `--start` and `--end`. For targeted event search, use `--agentic`.

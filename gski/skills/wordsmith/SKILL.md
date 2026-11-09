@@ -1,5 +1,5 @@
 ---
-name: wordsmith
+name: gski wordsmith
 description: Write and edit prose for humans - technical explanation, announcements, essays, direct-response copy - and strip AI tells from existing drafts
 ---
 

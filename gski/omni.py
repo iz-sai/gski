@@ -128,7 +128,7 @@ def cmd_generate(args):
 
 def _follow_up(args, kind):
     job = load_job(args.id)
-    backend = job.get("backend") or "api"
+    backend = job.get("backend") or default_backend()
     client = make_client(backend)
     is_async = args.async_mode
     user_input = build_input(
@@ -140,7 +140,9 @@ def _follow_up(args, kind):
     )
     aspect_ratio = args.aspect_ratio or job.get("aspect_ratio") or "9:16"
     resolution = args.resolution or job.get("resolution") or "720p"
-    duration = getattr(args, "duration", None) or job.get("duration")
+    duration = getattr(args, "duration", None)
+    if not duration and kind != "extend":
+        duration = job.get("duration")
 
     interaction = interactions_create(
         client,
@@ -158,7 +160,7 @@ def _follow_up(args, kind):
     record_interaction(job, iid, kind, args.prompt)
     job["aspect_ratio"] = aspect_ratio
     job["resolution"] = resolution
-    if duration:
+    if duration and kind != "extend":
         job["duration"] = duration
     save_job(job)
 
@@ -202,14 +204,15 @@ def cmd_list(args):
 
 def cmd_status(args):
     job = load_job(args.id)
-    client = make_client(job.get("backend") or "api")
+    backend = job.get("backend") or default_backend()
+    client = make_client(backend)
     iid = job["current_interaction_id"]
     interaction = client.interactions.get(iid)
     remote_status = getattr(interaction, "status", "unknown")
 
     print(f"job:         {job['job_id']}")
     print(f"state:       {job['state']}")
-    print(f"backend:     {job.get('backend', 'api')}")
+    print(f"backend:     {backend}")
     print(f"remote:      {remote_status}")
     print(f"interaction: {iid}")
     print(f"created:     {job['created_at']}  ({fmt_age(job['created_at'])} ago)")
@@ -225,7 +228,7 @@ def cmd_wait(args):
         print(job["video_path"])
         return
 
-    client = make_client(job.get("backend") or "api")
+    client = make_client(job.get("backend") or default_backend())
     result = poll(client, job["current_interaction_id"])
     _finish(job, client, result, args.output)
 
@@ -251,7 +254,7 @@ def _add_media_options(parser, video_help):
         action="append",
         default=[],
         metavar="FILE",
-        help="image input in prompt-tag order (repeatable)",
+        help="image input (repeatable)",
     )
     parser.add_argument(
         "--video",
@@ -279,7 +282,7 @@ def _add_output_options(parser, default_aspect=None, default_resolution=None):
     )
     parser.add_argument(
         "--duration",
-        help="clip duration (e.g. 4s, 5s, 10s; range 3s-10s)",
+        help="clip duration (e.g. 5s, 10s, 15s; 3s-15s for generate, 3s-10s for interpolation/extend)",
     )
     parser.add_argument("--output", "-o", help="also write the video to this path")
     mode = parser.add_mutually_exclusive_group()

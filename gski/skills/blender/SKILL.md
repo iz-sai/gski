@@ -1,5 +1,5 @@
 ---
-name: blender
+name: gski blender
 description: Blender scenes, camera animation and clay-motion previs; control the user's open Blender session, capture review frames and iteratively fix scenes with them.
 ---
 

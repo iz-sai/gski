@@ -5,7 +5,8 @@ from pathlib import Path
 
 from .models import GEMINI_TEXT
 
-MODELS = {k: GEMINI_TEXT[k] for k in ("flash", "pro")}
+
+MODELS = GEMINI_TEXT
 
 genai = None
 types = None
@@ -103,8 +104,8 @@ def register(subparsers):
         "--model",
         "-m",
         choices=list(MODELS.keys()),
-        default="flash",
-        help="model to use (default: flash)",
+        default="3-8",
+        help="model to use (default: 3-8)",
     )
     p.add_argument(
         "--system",
@@ -141,7 +142,7 @@ def run(args):
 
     contents = build_contents(args.prompt, args.files, stdin_data)
     config = build_config(args)
-    client = genai.Client()
+    client = genai.Client(http_options=types.HttpOptions(api_version="v1beta"))
     model = MODELS[args.model]
 
     response = client.models.generate_content(

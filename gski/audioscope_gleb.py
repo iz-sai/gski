@@ -9,7 +9,11 @@ from pathlib import Path
 
 from .models import GEMINI_TEXT, GEMINI_TRANSCRIBE
 
-MODELS = {k: GEMINI_TEXT[k] for k in ("flash", "pro")}
+MODELS = {
+    **GEMINI_TEXT,
+    "flash": GEMINI_TEXT.get("3-8", "gemini-3.8-flash"),
+    "pro": "gemini-3.1-pro-preview",
+}
 
 DEFAULT_LIKE = (
     "bizarre expressive non-verbal vocalizations: guttural growls, throat rumbles, "
@@ -254,7 +258,7 @@ def run_transcribe(args):
         diarize = timestamps = False
     src, out = _resolve_input(args)
     _init_deps()
-    client = genai.Client()
+    client = genai.Client(http_options=types.HttpOptions(api_version="v1beta"))
     config = _transcription_config(args, diarize=diarize, timestamps=timestamps)
 
     t0 = time.monotonic()
@@ -389,7 +393,7 @@ def _cut(src, dest_dir, items, total, pad, with_video):
 def run_sounds(args):
     src, out = _resolve_input(args)
     _init_deps()
-    client = genai.Client()
+    client = genai.Client(http_options=types.HttpOptions(api_version="v1beta"))
     model = MODELS[args.model]
     context = f"Context: {args.context}\n" if args.context else ""
     prompt = PROMPT_SOUNDS.format(like=args.like, context=context)

@@ -7,6 +7,8 @@ In addition to their general multimodal capabilities, Gemini models offer
 **enhanced accuracy** for specific use cases like [object detection](https://ai.google.dev/gemini-api/docs/image-understanding#object-detection)
 and [segmentation](https://ai.google.dev/gemini-api/docs/image-understanding#segmentation), through additional training.
 
+- `gemini-3.8-flash` (default) and `gemini-4-argon` are the supported models for image understanding.
+
 ## Passing images to Gemini
 
 You can provide images as input to Gemini using several methods:
@@ -310,7 +312,7 @@ Gemini models not only detect items but also segment them and provide their cont
 The model predicts a JSON list, where each item represents a segmentation mask. Each item has a bounding box ("`box_2d`") in the format `[ymin, xmin, ymax, xmax]` with normalized coordinates between 0 and 1000, a label ("`label`") that identifies the object, and finally the segmentation mask inside the bounding box as a polygon of `[x, y]` coordinates normalized to 0-1000.
 
 > [!NOTE]
-> **Note:** For better results, disable [thinking](https://ai.google.dev/gemini-api/docs/thinking) by setting the thinking level to "minimal".
+> **Note:** For better results, reduce [thinking](https://ai.google.dev/gemini-api/docs/thinking) by setting the thinking level to `"low"`.
 
 ### Python
 
@@ -352,7 +354,7 @@ The model predicts a JSON list, where each item represents a segmentation mask. 
             "schema": BoundingBoxes.model_json_schema()
         },
         generation_config={
-            "thinking_level": "minimal"
+            "thinking_level": "low"
         }
     )
 
@@ -398,7 +400,7 @@ The model predicts a JSON list, where each item represents a segmentation mask. 
           }
         },
         "generation_config": {
-          "thinking_level": "minimal"
+          "thinking_level": "low"
         }
       }'
 

@@ -28,6 +28,7 @@ def main():
 
     from gski.audioscope import register as as_register
     from gski.blender import register as blender_register
+    from gski.ctx import register as ctx_register
     from gski.deepresearch import register as dr_register
     from gski.gptimage2 import register as gi_register
     from gski.llm_process import register as lp_register
@@ -44,6 +45,7 @@ def main():
 
     as_register(sub)
     blender_register(sub)
+    ctx_register(sub)
     dr_register(sub)
     gi_register(sub)
     lp_register(sub)

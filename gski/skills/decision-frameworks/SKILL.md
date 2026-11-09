@@ -1,5 +1,5 @@
 ---
-name: decision-frameworks
+name: gski decision-frameworks
 description: Reasoning frameworks for discussions that converge on a decision - DD Double Diamond, SI Strong Inference, DL Dialectic, DC Double Crux, FP First Principles, PM Pre-mortem
 ---
 

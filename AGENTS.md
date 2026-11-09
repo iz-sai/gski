@@ -14,7 +14,8 @@ gski/
     ├── gptimage2.py        # gski gptimage2 — OpenAI GPT Image gen/edit
     ├── llm_process.py      # gski llm-process — process files/data with Gemini
     ├── nanobanana.py       # gski nanobanana — Gemini image gen/edit
-    ├── nanoscope.py        # gski nanoscope — Gemini image understanding
+    ├── nanoscope.py        # gski nanoscope — Gemini image & video understanding
+    ├── nanoscope_lib/      # nanoscope video transcode, GCS upload, interactions API
     ├── ocq.py              # gski ocq — orchestrate opencode worker sessions (ledger in .ocq/)
     ├── ocq_lib/            # ocq API, ledger folding/math, dashboard server & static web assets
     ├── omni.py             # gski omni — Gemini Omni Flash video gen/edit (stateful jobs)
@@ -60,11 +61,11 @@ gski/
 
 ```
 gski audioscope transcribe FILE [--lang BCP47] [--no-diarize] [--no-timestamps] [--smart] [--gap S] [--chunk S] [--output-dir DIR]
-gski audioscope sounds FILE [--like TEXT] [--context TEXT] [--extract] [--pad S] [--model flash|pro] [--chunk S] [--output-dir DIR]
+gski audioscope sounds FILE [--like TEXT] [--context TEXT] [--extract] [--pad S] [--model 3-8|argon] [--chunk S] [--output-dir DIR]
 gski gptimage2 "prompt" [--image FILE]... [--mask FILE] [--model gpt-image-2.5-flare|...] [--size WxH|auto] [--quality high|low|medium|xhigh|max|auto] [--format jpg|png|webp] [--compression N] [--background auto|opaque|transparent] [-n N] [--output-dir DIR]
-gski llm-process "prompt" --file FILE [--file FILE]... [--model flash|pro] [--system TEXT] [--json] [--no-think]
+gski llm-process "prompt" --file FILE [--file FILE]... [--model 3-8|argon] [--system TEXT] [--json] [--no-think]
 gski nanobanana "prompt" [--image FILE]... [--model banana2.1] [--aspect-ratio RATIO] [--size 1K|2K|4K] [--search] [--image-search] [--thinking] [--format jpg|png|webp] [-o FILE] [--output-dir DIR]
-gski nanoscope "prompt" --image FILE [--url URL]... [--model flash|pro] [--detect] [--segment] [--output-dir DIR]
+gski nanoscope "prompt" [--image FILE]... [--video FILE]... [--url URL]... [--model 3-8|argon] [--media-res low|medium|high|ultra_high] [--fps F] [--target-res 360p|480p|720p|1080p|original] [--agentic] [--no-audio] [--start T] [--end T] [--detect] [--segment] [--output-dir DIR]
 gski omni generate "prompt" [--image FILE]... [--video FILE]... [--aspect-ratio 16:9|9:16] [--resolution 360p|720p|1080p|4k] [--task text_to_video|image_to_video|reference_to_video|edit|extend] [--backend api|vertex] [--output FILE] [--async]
 gski omni edit <job-id> "prompt" [--image FILE]... [--video FILE]... [--aspect-ratio 16:9|9:16] [--resolution 360p|720p|1080p|4k] [--output FILE] [--async]
 gski omni extend <job-id> ["prompt"] [--image FILE]... [--video FILE]... [--output FILE] [--async]

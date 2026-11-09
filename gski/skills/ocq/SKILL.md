@@ -1,6 +1,6 @@
 ---
 name: gski ocq
-description: Orchestrate opencode worker sessions - split repetitive work into tasks, run each in a fresh worker session, verify results, track state in a ledger
+description: Orchestrate opencode worker sessions - split work into tasks, dispatch, handle reports, track state in a ledger
 ---
 
 # ocq
@@ -8,8 +8,19 @@ description: Orchestrate opencode worker sessions - split repetitive work into t
 `gski ocq` runs tasks in separate opencode worker sessions on the shared
 opencode background service (auto-started; `OCQ_URL`/`OCQ_PASSWORD` target
 another server, `gski ocq serve` runs a separate one). You are the orchestrator:
-you plan, dispatch, verify, and decide. Workers do the tasks. You never do
-tasks yourself.
+you plan, dispatch, read reports, and decide. Delegate substantial or repetitive
+work; handle small, clear, in-scope fixes directly when dispatch adds more overhead
+than value. No run, brief, or extra approval cycle is needed for those fixes.
+Do not edit files a running worker is changing.
+
+When delegating, default to `worker`: supply the procedure, inputs, and outputs. It executes
+and reports blockers instead of investigating. Select the existing `builder`
+only for user-authorized investigation or implementation needing independent
+choices. A delegated code edit with a known procedure still belongs to `worker`.
+
+Neither O nor either agent tests, compares, or validates artifacts unless the
+user explicitly requests it. Do not invent checks in the plan or brief. Normal
+execution errors must be reported; `done` means execution completed, not verified.
 
 State lives in the project, not in your context:
 
@@ -25,13 +36,13 @@ State lives in the project, not in your context:
 ## Commands
 
 ```bash
-gski ocq init RUN [--agent worker] [--model provider/model] [--variant V] [--concurrency N]
+gski ocq init RUN [--agent worker|builder] [--model provider/model] [--variant V] [--concurrency N]
 gski ocq add RUN "task text" ["task text"]... [--deps 0001,0002]
 gski ocq add RUN --file tasks.jsonl        # {"task": "...", "id"?: "...", "deps"?: [...]} or plain lines
 gski ocq ls                                # runs in this project
 gski ocq ledger RUN [--status S...] [--all]  # counts + actionable rows
 gski ocq spawn RUN                         # fill free slots with ready pending tasks
-gski ocq spawn RUN ID... [--allow 'shell:ssh host *']... [--model M]
+gski ocq spawn RUN ID... [--agent worker|builder] [--allow 'shell:ssh host *']... [--model M]
 gski ocq wait-any RUN [--timeout 600]      # block until workers finish or ping
 gski ocq result RUN ID                     # details + worker's last reply
 gski ocq done RUN ID... [--note]
@@ -44,17 +55,19 @@ gski ocq send RUN ID "text" [--queue]      # message a running/reported worker; 
 Task ids are zero-padded (`0001`); `1` also works.
 Statuses: `pending` -> `running` -> `reported` -> `done` | `failed`, or back to
 `pending` by `retry`/`abort`, or `reported` -> `running` by `send`.
+`init --agent` sets the run default; `spawn --agent` overrides that dispatch only.
+Repeat the override on retries. ocq sessions cannot delegate to subagents.
 
 ## Phase 1: understand, propose, wait
 
-Before anything runs:
+Before starting a worker run:
 
-1. Read the user's docs and inputs. Work out what one task is.
+1. Read the supplied docs and inputs. Use the known procedure; do not rediscover it.
 2. Send a plan to the user:
    - your understanding of the goal, in a few lines
    - how the work splits into tasks: count, and 2-3 concrete examples
    - the brief you will give workers (summary)
-   - what "done" means and how you will verify it
+   - what execution must complete to count as "done"
    - concurrency, agent, model, extra permissions if any
 3. Stop and wait for approval. Nothing is spawned before the user says go.
 
@@ -63,9 +76,10 @@ If the user wants a trial, run 1-3 tasks first and show results before the rest.
 ## Phase 2: set up
 
 1. `gski ocq init RUN ...`
-2. Write `brief.md`: goal, inputs and where they are, conventions, where
-   artifacts go, exact done criteria, what to do when unsure (fail with a
-   reason, never guess). Workers see only the brief and their task text.
+2. Write `brief.md`: goal, inputs, outputs, conventions, and completion criteria.
+   For `worker`, give the procedure; for `builder`, give scope and constraints.
+   Include checks only if the user requested them. Blockers go back to O with
+   the reason and any partial work. Workers have no orchestrator conversation context.
 3. Set extra permissions in `run.json` `permission`, same shape as opencode
    config: `{"shell": {"ssh myhost *": "allow"}, "webfetch": "deny"}`.
    Only what the user approved. Standing approval: always add
@@ -80,7 +94,7 @@ If the user wants a trial, run 1-3 tasks first and show results before the rest.
 ```
 spawn RUN            -> fills slots up to concurrency
 wait-any RUN         -> reports finished workers
-verify each report   -> done / retry --feedback / fail
+read each report     -> done / retry --feedback / fail
 repeat
 ```
 
@@ -92,18 +106,19 @@ Waiting:
   `ledger RUN` is enough; the background wait keeps going.
 - On `timeout: N running`, start it again in the background. No commentary.
 
-Verifying:
-- The worker saying `done` is a claim, not a fact. Check the artifact against
-  the done criteria with the cheapest real check: read the file, run the
-  test, grep the output.
-- For large uniform runs, check every report line, and open a sample of
-  artifacts. Open more if anything looks off.
+Reports:
+- Accept successful execution reports. No artifact inspection, sampling, or
+  verification loops unless the user requested them; stay within that request.
+- Workers may note concrete instruction problems encountered during execution.
+  Do not assign a separate instruction review or automatically rerun completed work.
 - Mark several at once: `gski ocq done RUN 0004 0005 0006`.
 
 Deciding:
 - Bad result, fixable: `retry --feedback` with a concrete correction. The
   next attempt sees it.
 - Worker `failed` with a real reason, or max attempts reached: `fail --note`.
+- A procedure needs investigation: clarify it or use `builder` only within the
+  approved scope. A worker never promotes itself to builder.
 - The same failure pattern across tasks: stop spawning, fix the brief or
   task texts, tell the user if it changes the plan.
 - `NNNN denied <tool>: <what>` lines: ocq auto-rejected a permission ask. If
@@ -135,6 +150,8 @@ Context hygiene:
 
 When `ledger` shows nothing pending or running: a short summary for the
 user - counts, failures grouped by reason, where the artifacts are, cost.
+Include useful instruction feedback and an obvious correction for next time,
+if any. Do not launch an investigation or repair project from that feedback.
 
 ## Resume
 

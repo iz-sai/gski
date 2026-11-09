@@ -138,6 +138,13 @@ def build_prompt(run, t):
         parts += ["", "Feedback on the previous attempt:", t["feedback"]]
     parts += [
         "",
+        "No human is available. Stay within the task scope; if blocked or a decision exceeds it, "
+        "report failed with the reason and any partial work instead of asking questions.",
+        "Do not test, compare, or validate unless the brief or task explicitly relays a user request "
+        "for it. Observe execution errors; done means execution completed, not independently verified.",
+        "In note, mention concrete instruction problems encountered while executing; suggest a fix "
+        "only if obvious. Do not search for problems or review the instructions separately.",
+        "",
         f"Ping: only when the orchestrator explicitly asks for it (in the brief, the task, or a message), "
         f"write one line to {rel}/results/{t['id']}.ping at the point it asks for, then keep working. "
         "Never ping on your own initiative.",

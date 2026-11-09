@@ -9,7 +9,11 @@ from google.genai import types
 
 from .models import GEMINI_TEXT
 
-MODELS = {k: GEMINI_TEXT[k] for k in ("flash", "pro")}
+MODELS = {
+    **GEMINI_TEXT,
+    "flash": GEMINI_TEXT.get("3-8", "gemini-3.8-flash"),
+    "pro": "gemini-3.1-pro-preview",
+}
 
 PROMPT_TRANSCRIBE = "Generate a transcript of the speech."
 
@@ -341,7 +345,7 @@ def run(args):
         sys.exit(1)
 
     prompt = args.prompt or default_prompt(args)
-    client = genai.Client()
+    client = genai.Client(http_options=types.HttpOptions(api_version="v1beta"))
     model = MODELS[args.model]
 
     output_dir = Path(args.output_dir)
