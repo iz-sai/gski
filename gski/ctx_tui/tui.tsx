@@ -35,9 +35,25 @@ function spawnVim(initialText: string, tag: string): Promise<string | null> {
     const safeTag = tag.replace(/[^a-zA-Z0-9_-]/g, "_")
     const file = join(TMP_DIR, `ctx-edit-${safeTag}-${Date.now()}.md`)
     writeFileSync(file, initialText, "utf8")
-    const child = spawn("alacritty", ["--class", "oc-edit", "-t", `OC Edit | ${tag}`, "-e", "vim", file], {
-      stdio: "ignore",
-    })
+    const child =
+      process.platform === "darwin"
+        ? spawn(
+            "open",
+            [
+              "-Wna",
+              "Ghostty.app",
+              "--args",
+              `--title=OC Edit | ${tag}`,
+              "--quit-after-last-window-closed=true",
+              "-e",
+              "vim",
+              file,
+            ],
+            { stdio: "ignore" },
+          )
+        : spawn("alacritty", ["--class", "oc-edit", "-t", `OC Edit | ${tag}`, "-e", "vim", file], {
+            stdio: "ignore",
+          })
     child.on("error", () => {
       try {
         unlinkSync(file)

@@ -111,6 +111,8 @@ def cmd_init(args):
         if v is not None:
             cfg[k] = v
     cfg["dir"] = str(root)
+    if os.environ.get("OPENCODE_SESSION_ID"):
+        cfg["session"] = os.environ["OPENCODE_SESSION_ID"]
     cfg_path.write_text(json.dumps(cfg, indent=2) + "\n")
     remember(root)
     brief = rd / "brief.md"

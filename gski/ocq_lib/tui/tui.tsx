@@ -213,6 +213,7 @@ export default Plugin.define({
 
     const [selRun, setSelRun] = createSignal<string>()
     const [selId, setSelId] = createSignal<string>()
+    const [orchSid, setOrchSid] = createSignal<string>()
     const [brief, setBrief] = createSignal(false)
     const [pane, setPane] = createSignal(true)
     const [zoom, setZoom] = createSignal(false)
@@ -352,6 +353,10 @@ export default Plugin.define({
       const r = route()
       if (r.type === "plugin" && r.name === ROUTE) return close()
       refreshFiles()
+      if (r.type === "session" && r.sessionID) {
+        const isWorker = runs().some((run) => run.tasks.some((t) => t.session === r.sessionID))
+        if (!isWorker) setOrchSid(r.sessionID)
+      }
       context.ui.dialog.clear()
       const returnRoute =
         r.type === "session"
@@ -594,6 +599,11 @@ export default Plugin.define({
         if (!t?.session) return context.ui.toast.show({ message: "No session for this task", variant: "warning" })
         context.ui.router.navigate({ type: "session", sessionID: t.session })
       }
+      const openOrchestrator = () => {
+        const sid = current()?.cfg?.session || current()?.cfg?.orchestrator || orchSid()
+        if (!sid) return context.ui.toast.show({ message: "No orchestrator session recorded", variant: "warning" })
+        context.ui.router.navigate({ type: "session", sessionID: sid })
+      }
       const half = () => Math.max(1, Math.floor(perPage() / 2))
 
       context.keymap.layer(() => ({
@@ -610,6 +620,7 @@ export default Plugin.define({
           { bind: "shift+j", title: "Scroll detail down", group: "ocq", run: () => detail?.scrollBy(3) },
           { bind: "shift+k", title: "Scroll detail up", group: "ocq", run: () => detail?.scrollBy(-3) },
           { bind: "return,o", title: "Open worker session", group: "ocq", run: openSession },
+          { bind: "shift+o", title: "Open orchestrator session", group: "ocq", run: openOrchestrator },
           { bind: "space", title: "Zoom detail", group: "ocq", run: () => setZoom((z) => !z) },
           { bind: "p", title: "Toggle detail pane", group: "ocq", run: () => setPane((v) => !v) },
           { bind: "b", title: "Toggle brief", group: "ocq", run: () => setBrief((v) => !v) },
@@ -771,7 +782,7 @@ export default Plugin.define({
           <box height={1} flexShrink={0} />
           <text wrapMode="none" truncate height={1} flexShrink={0} fg={muted()}>
             {
-              "j/k task    gg/G ends    ^d/^u page    h/l run    ⏎ session    space zoom    p pane    J/K scroll    b brief    r refresh    q close"
+              "j/k task    gg/G ends    ^d/^u page    h/l run    ⏎/o worker    O orch    space zoom    p pane    J/K scroll    b brief    r refresh    q close"
             }
           </text>
         </box>

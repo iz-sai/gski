@@ -25,10 +25,17 @@ def register(subparsers):
 
 
 def run(args):
-    bun = shutil.which("bun")
-    if not bun:
-        print("error: bun not found", file=sys.stderr)
-        sys.exit(1)
+    import os
+    bun = shutil.which("bun") or str(Path.home() / ".local" / "bin" / "bun")
+    env = dict(os.environ)
+    if not Path(bun).exists():
+        oc = shutil.which("opencode") or str(Path.home() / ".opencode" / "bin" / "opencode")
+        if Path(oc).exists():
+            bun = oc
+            env["BUN_BE_BUN"] = "1"
+        else:
+            print("error: bun not found", file=sys.stderr)
+            sys.exit(1)
     cmd = [bun, str(CLI)]
     if args.session:
         cmd += ["--session", args.session]
@@ -41,4 +48,4 @@ def run(args):
         cmd += args.marks
         if args.clear:
             cmd.append("--clear")
-    sys.exit(subprocess.run(cmd).returncode)
+    sys.exit(subprocess.run(cmd, env=env).returncode)

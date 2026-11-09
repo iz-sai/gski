@@ -23,11 +23,7 @@ VERTEX_API_REVISION = "2026-05-20"
 VERTEX_CRED_PATH = Path.home() / ".config" / "gski" / "gemcred.json"
 
 
-def default_backend():
-    return os.environ.get("GSKI_OMNI_BACKEND") or "vertex"
-
-
-def _vertex_credentials():
+def _find_vertex_credentials():
     for c in (
         os.environ.get("GSKI_VERTEX_CREDENTIALS"),
         os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"),
@@ -35,6 +31,17 @@ def _vertex_credentials():
     ):
         if c and Path(c).exists():
             return Path(c).resolve()
+    return None
+
+
+def default_backend():
+    return os.environ.get("GSKI_OMNI_BACKEND") or ("vertex" if _find_vertex_credentials() else "api")
+
+
+def _vertex_credentials():
+    cred = _find_vertex_credentials()
+    if cred:
+        return cred
     print(
         f"error: vertex service account json not found at {VERTEX_CRED_PATH}\n"
         "  set GSKI_VERTEX_CREDENTIALS or GOOGLE_APPLICATION_CREDENTIALS",
