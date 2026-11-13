@@ -39,7 +39,7 @@ gski llm-process "list all functions" -f app.py --no-think
 | Flag | Short | Values | Default | Notes |
 |------|-------|--------|---------|-------|
 | `--file` | `-f` | path | — | input file, repeatable |
-| `--model` | `-m` | `3-8`, `argon` | `3-8` | model selection |
+| `--model` | `-m` | `3-8`, `carbon` | `3-8` | model selection |
 | `--system` | `-s` | text | — | system instruction |
 | `--json` | — | flag | off | request JSON output |
 | `--no-think` | — | flag | off | disable reasoning |

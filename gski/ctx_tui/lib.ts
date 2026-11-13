@@ -297,54 +297,143 @@ export function loadSessionItems(sessionID: string): { info?: SessionRow; items:
   }
 }
 
-export function recalcLastAssistantTokens(db: Database, sessionID: string) {
-  const rows = db
-    .query(`SELECT id, type, seq, data FROM session_message WHERE session_id = ? ORDER BY seq ASC`)
-    .all(sessionID) as { id: string; type: string; seq: number; data: string }[]
-  if (!rows.length) return
-  let compSeq = 0
-  let keepID: string | undefined
-  for (const r of rows) {
-    if (r.type === "compaction") {
-      try {
-        const d = JSON.parse(r.data)
-        if (d.status === "completed" || d.summary) {
-          compSeq = r.seq
-          keepID = d.metadata?.keepID
-        }
-      } catch {}
-    }
-  }
-  let fromSeq = compSeq
-  if (keepID) {
-    const k = rows.find((r) => r.id === keepID)
-    if (k && k.seq < fromSeq) fromSeq = k.seq
-  }
-  let activeChars = 0
-  let lastAsst: { id: string; data: any } | undefined
-  for (const r of rows) {
-    let d: any
-    try {
-      d = JSON.parse(r.data)
-    } catch {
-      continue
-    }
-    if (r.seq >= fromSeq) activeChars += r.data.length
-    if (r.type === "assistant" && d.tokens) lastAsst = { id: r.id, data: d }
-  }
-  if (lastAsst) {
-    const estInput = Math.max(256, Math.round(activeChars / 4))
-    lastAsst.data.tokens = {
-      input: estInput,
-      output: lastAsst.data.tokens.output || 0,
-      reasoning: lastAsst.data.tokens.reasoning || 0,
-      cache: { read: 0, write: 0 },
-    }
-    db.query(`UPDATE session_message SET data = ? WHERE id = ?`).run(JSON.stringify(lastAsst.data), lastAsst.id)
-  }
+type MsgRow = { id: string; type: string; seq: number; data: string }
+
+const ia = (s?: string) => (s ? Math.round(s.length / 4) : 0)
+
+function mediaTokens(mime?: string): number {
+  const m = (mime || "").toLowerCase()
+  if (m.startsWith("image/")) return 1500
+  if (m === "application/pdf") return 2000
+  return 0
 }
 
-export function mutateItem(item: Item, action: "edit" | "strip" | "truncate" | "clean" | "delete" | "delete_after", newText?: string): string {
+function estRowTokens(type: string, d: any, textOnly = false): number {
+  if (type === "user" || type === "synthetic" || type === "system") {
+    let t = ia(String(d?.text ?? ""))
+    if (!textOnly && Array.isArray(d?.files)) {
+      for (const f of d.files) t += mediaTokens(f?.mime)
+    }
+    return t
+  }
+  if (type === "compaction") return ia(String(d?.summary ?? ""))
+  if (type === "assistant") {
+    let t = 0
+    for (const p of Array.isArray(d?.content) ? d.content : []) {
+      if (p?.type === "text" || (p?.type === "reasoning" && !textOnly)) {
+        t += ia(String(p.text ?? ""))
+      } else if (p?.type === "tool") {
+        const st = p.state || {}
+        t += ia(String(p.name || "") + JSON.stringify(st.input ?? {}))
+        if (textOnly) {
+          const out = Array.isArray(st.content)
+            ? st.content
+                .filter((c: any) => c?.type === "text")
+                .map((c: any) => String(c.text ?? ""))
+                .join("\n")
+            : st.error
+              ? typeof st.error === "string"
+                ? st.error
+                : JSON.stringify(st.error)
+              : ""
+          t += ia(out.slice(0, 1250))
+        } else if (Array.isArray(st.content)) {
+          for (const c of st.content) {
+            if (c?.type === "text") t += ia(String(c.text ?? ""))
+            else if (c?.type === "file") t += mediaTokens(c?.mime)
+          }
+        } else if (st.error) {
+          t += ia(typeof st.error === "string" ? st.error : JSON.stringify(st.error))
+        }
+      }
+    }
+    return t
+  }
+  return 0
+}
+
+function estActiveTokensUpTo(rows: MsgRow[], maxSeq: number): number {
+  let compSeq = 0
+  let keepID: string | undefined
+  const parsed: { r: MsgRow; d: any }[] = []
+  for (const r of rows) {
+    if (r.seq > maxSeq) break
+    try {
+      const d = JSON.parse(r.data)
+      parsed.push({ r, d })
+      if (r.type === "compaction" && (d.status === "completed" || d.summary)) {
+        compSeq = r.seq
+        keepID = d.metadata?.keepID
+      }
+    } catch {}
+  }
+  let keepSeq = compSeq
+  if (keepID) {
+    const k = parsed.find((x) => x.r.id === keepID)
+    if (k && k.r.seq < keepSeq) keepSeq = k.r.seq
+  }
+  let total = 0
+  for (const { r, d } of parsed) {
+    if (r.seq >= keepSeq) total += estRowTokens(r.type, d, r.seq < compSeq)
+  }
+  return total
+}
+
+function readMsgRows(db: Database, sessionID: string): MsgRow[] {
+  return db
+    .query(`SELECT id, type, seq, data FROM session_message WHERE session_id = ? ORDER BY seq ASC`)
+    .all(sessionID) as MsgRow[]
+}
+
+export function recalcLastAssistantTokens(db: Database, sessionID: string, rowsBefore?: MsgRow[]) {
+  const rows = readMsgRows(db, sessionID)
+  if (!rows.length) return
+  let lastAsst: { id: string; seq: number; data: any } | undefined
+  for (const r of rows) {
+    if (r.type !== "assistant") continue
+    try {
+      const d = JSON.parse(r.data)
+      if (d.tokens && !d.error) lastAsst = { id: r.id, seq: r.seq, data: d }
+    } catch {}
+  }
+  if (!lastAsst) return
+  const estAfter = estActiveTokensUpTo(rows, lastAsst.seq)
+  let targetTotal = estAfter + 20000
+  const prevRow = rowsBefore?.find((r) => r.id === lastAsst!.id)
+  if (prevRow) {
+    try {
+      const pt = JSON.parse(prevRow.data).tokens || {}
+      const prevInput = (pt.input || 0) + (pt.cache?.read || 0) + (pt.cache?.write || 0)
+      const prevTotal = prevInput + (pt.output || 0) + (pt.reasoning || 0)
+      const estBefore = estActiveTokensUpTo(rowsBefore!, lastAsst.seq)
+      const sane = (pt.cache?.read || 0) > 0 || prevTotal <= estBefore * 2.5 + 50000
+      if (sane && prevTotal > 0) {
+        const delta = estAfter - estBefore
+        if (delta === 0) return
+        const base = Math.min(prevTotal, 20000)
+        const density = estBefore > 0 ? Math.min(2.5, Math.max(1, (prevTotal - base) / estBefore)) : 1
+        const scaled = Math.round(delta * (delta < 0 ? density : 1))
+        targetTotal = Math.max(estAfter + 256, prevTotal + scaled)
+      }
+    } catch {}
+  }
+  const out = Math.min(lastAsst.data.tokens.output || 0, Math.max(0, targetTotal - 256))
+  const reas = Math.min(lastAsst.data.tokens.reasoning || 0, Math.max(0, targetTotal - 256 - out))
+  lastAsst.data.tokens = {
+    input: Math.max(256, targetTotal - out - reas),
+    output: out,
+    reasoning: reas,
+    cache: { read: 0, write: 0 },
+  }
+  db.query(`UPDATE session_message SET data = ? WHERE id = ?`).run(JSON.stringify(lastAsst.data), lastAsst.id)
+}
+
+export function mutateItem(
+  item: Item,
+  action: "edit" | "strip" | "truncate" | "clean" | "delete" | "delete_after",
+  newText?: string,
+  skipRecalc = false,
+): string {
   const db = openDb(false)
   if (!db) return "DB not found"
   try {
@@ -352,10 +441,11 @@ export function mutateItem(item: Item, action: "edit" | "strip" | "truncate" | "
     const info = db.query(`SELECT session_id FROM session_message WHERE id = ?`).get(item.msgId) as { session_id: string } | undefined
     if (!info) return "Message not found"
     const sid = info.session_id
+    const rowsBefore = skipRecalc ? undefined : readMsgRows(db, sid)
 
     if (action === "delete_after") {
       const res = db.query(`DELETE FROM session_message WHERE session_id = ? AND seq > ?`).run(sid, item.seq)
-      recalcLastAssistantTokens(db, sid)
+      if (!skipRecalc) recalcLastAssistantTokens(db, sid, rowsBefore)
       return `Deleted ${res.changes} messages after #${item.seq}`
     }
     if (action === "delete") {
@@ -366,12 +456,12 @@ export function mutateItem(item: Item, action: "edit" | "strip" | "truncate" | "
         if (Array.isArray(d.content) && d.content.length > 1) {
           d.content.splice(item.partIdx, 1)
           db.query(`UPDATE session_message SET data = ?, time_updated = ? WHERE id = ?`).run(JSON.stringify(d), nowMs, item.msgId)
-          recalcLastAssistantTokens(db, sid)
+          if (!skipRecalc) recalcLastAssistantTokens(db, sid, rowsBefore)
           return `Removed part [${item.partIdx}] from #${item.seq}`
         }
       }
       db.query(`DELETE FROM session_message WHERE id = ?`).run(item.msgId)
-      recalcLastAssistantTokens(db, sid)
+      if (!skipRecalc) recalcLastAssistantTokens(db, sid, rowsBefore)
       return `Deleted message #${item.seq}`
     }
 
@@ -411,7 +501,7 @@ export function mutateItem(item: Item, action: "edit" | "strip" | "truncate" | "
     }
 
     db.query(`UPDATE session_message SET data = ?, time_updated = ? WHERE id = ?`).run(JSON.stringify(d), nowMs, item.msgId)
-    recalcLastAssistantTokens(db, sid)
+    if (!skipRecalc) recalcLastAssistantTokens(db, sid, rowsBefore)
     return `${action} applied to #${item.seq}`
   } catch (e: any) {
     return `Error: ${e?.message || String(e)}`
@@ -425,7 +515,7 @@ export type Plan = { sid: string; boundary: number; created: number; marks: Reco
 
 export const ACTIONS: Action[] = ["strip", "truncate", "delete"]
 export const KEEP_TAIL = 6
-export const MAX_FRAC = 0.6
+export const MAX_FRAC = 0.75
 const ALLOWED: ItemKind[] = ["text", "reasoning", "tool", "synthetic"]
 
 export const itemId = (it: Item) => (it.partIdx === null ? `${it.seq}` : `${it.seq}.${it.partIdx}`)
@@ -478,12 +568,13 @@ export function planSaved(plan: Plan, items: Item[]): number {
   return n
 }
 
-export function deleteFromSeq(sid: string, seq: number): number {
+export function deleteFromSeq(sid: string, seq: number, skipRecalc = false): number {
   const db = openDb(false)
   if (!db) return 0
   try {
+    const rowsBefore = skipRecalc ? undefined : readMsgRows(db, sid)
     const res = db.query(`DELETE FROM session_message WHERE session_id = ? AND seq >= ?`).run(sid, seq)
-    recalcLastAssistantTokens(db, sid)
+    if (!skipRecalc) recalcLastAssistantTokens(db, sid, rowsBefore)
     return res.changes
   } finally {
     db.close()
@@ -493,6 +584,15 @@ export function deleteFromSeq(sid: string, seq: number): number {
 export function applyPlan(sid: string): string {
   const plan = loadPlan(sid)
   if (!plan) return "No pending cleanup plan"
+  const db0 = openDb(true)
+  let rowsBefore: MsgRow[] | undefined
+  if (db0) {
+    try {
+      rowsBefore = readMsgRows(db0, sid)
+    } finally {
+      db0.close()
+    }
+  }
   const items = loadSessionItems(sid).items
   const byId = new Map(items.map((i) => [itemId(i), i]))
   const marks = Object.entries(plan.marks)
@@ -500,10 +600,18 @@ export function applyPlan(sid: string): string {
     .filter((m): m is { it: Item; a: Action } => !!m.it && m.it.seq < plan.boundary)
   marks.sort((x, y) => x.it.seq - y.it.seq || (y.it.partIdx ?? -1) - (x.it.partIdx ?? -1))
   let ok = 0
-  for (const m of marks) if (/applied|Removed|Deleted/.test(mutateItem(m.it, m.a))) ok++
+  for (const m of marks) if (/applied|Removed|Deleted/.test(mutateItem(m.it, m.a, undefined, true))) ok++
   const total = Object.keys(plan.marks).length
   let tail = "cleanup turn kept (new messages since)"
-  if (lastUserSeq(items) === plan.boundary) tail = `removed ${deleteFromSeq(sid, plan.boundary)} cleanup messages`
+  if (lastUserSeq(items) === plan.boundary) tail = `removed ${deleteFromSeq(sid, plan.boundary, true)} cleanup messages`
+  const db = openDb(false)
+  if (db) {
+    try {
+      recalcLastAssistantTokens(db, sid, rowsBefore)
+    } finally {
+      db.close()
+    }
+  }
   clearPlan(sid)
   return `Applied ${ok}/${total} marks, ${tail}`
 }

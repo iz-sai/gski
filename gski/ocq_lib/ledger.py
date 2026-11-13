@@ -24,10 +24,27 @@ def project_root():
     return cwd
 
 
+def touch_orchestrator(rd):
+    sid = os.environ.get("OPENCODE_SESSION_ID")
+    if not sid:
+        return
+    cfg_path = rd / "run.json"
+    if not cfg_path.exists():
+        return
+    try:
+        cfg = json.loads(cfg_path.read_text())
+        if cfg.get("orchestrator") != sid:
+            cfg["orchestrator"] = sid
+            cfg_path.write_text(json.dumps(cfg, indent=2) + "\n")
+    except Exception:
+        pass
+
+
 def run_dir(run, must=True):
     rd = project_root() / ".ocq" / "runs" / run
     if must and not (rd / "run.json").exists():
         die(f"run not found: {rd}")
+    touch_orchestrator(rd)
     return rd
 
 

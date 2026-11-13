@@ -15,14 +15,14 @@ gski nanoscope "PROMPT" --image FILE --segment [--output-dir DIR]
 gski nanoscope "PROMPT" --video FILE
 gski nanoscope "PROMPT" --video FILE --agentic
 gski nanoscope "PROMPT" --video FILE --start 00:00 --end 30:00
-gski nanoscope "PROMPT" --video FILE --fps 0.5 --target-res 360p --no-audio --media-res high --model argon
+gski nanoscope "PROMPT" --video FILE --fps 0.5 --target-res 360p --no-audio --media-res high --model carbon
 ```
 
 Flags:
 - `--image FILE` (repeatable): local image or URL
 - `--video FILE` (repeatable): local video, public HTTPS URL, or YouTube URL
 - `--url URL` (repeatable): image URL
-- `--model 3-8|argon`: `gemini-3.8-flash` (default `3-8`) or `gemini-4-argon` (`argon`)
+- `--model 3-8|carbon`: `gemini-3.8-flash` (default `3-8`) or `gemini-4-carbon` (`carbon`)
 - `--media-res low|medium|high|ultra_high`: API frame token budget (default `low`=66 tok/frame, `high`=258 tok/frame)
 - `--fps FLOAT`: local transcode & static sampling rate (default `1.0`)
 - `--target-res 360p|480p|720p|1080p|original`: local ffmpeg height before Files API upload (default `480p`)

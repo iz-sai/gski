@@ -253,7 +253,7 @@ def make_client(backend="vertex"):
             vertexai=True,
             project=project,
             location=os.environ.get("GOOGLE_CLOUD_LOCATION") or VERTEX_LOCATION,
-            http_options=types.HttpOptions(api_version="v1beta", headers={"Api-Revision": VERTEX_API_REVISION}),
+            http_options=types.HttpOptions(headers={"Api-Revision": VERTEX_API_REVISION}),
         )
 
     if not os.environ.get("GEMINI_API_KEY"):

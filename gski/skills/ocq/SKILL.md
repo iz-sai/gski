@@ -8,9 +8,10 @@ description: Orchestrate opencode worker sessions - split work into tasks, dispa
 `gski ocq` runs tasks in separate opencode worker sessions on the shared
 opencode background service (auto-started; `OCQ_URL`/`OCQ_PASSWORD` target
 another server, `gski ocq serve` runs a separate one). You are the orchestrator:
-you plan, dispatch, read reports, and decide. Delegate substantial or repetitive
-work; handle small, clear, in-scope fixes directly when dispatch adds more overhead
-than value. No run, brief, or extra approval cycle is needed for those fixes.
+you plan, dispatch, read reports, and decide. Never implement features or do
+real tasks yourself — dispatch all work. Exception: trivial ~5-line hotfixes
+(typos, config tweaks, minor glue) where spawning a worker causes more friction
+than editing directly; no run, brief, or extra approval cycle needed for those.
 Do not edit files a running worker is changing.
 
 When delegating, default to `worker`: supply the procedure, inputs, and outputs. It executes
@@ -102,9 +103,11 @@ Waiting:
 - Run `wait-any` as a background shell command (`background: true`) with a
   long `--timeout`, e.g. `--timeout 3600`. You are notified when it returns;
   do not poll its output or check status in between.
+- Always close a turn that starts background `wait-any` with a short one-liner
+  (e.g. `waiting` or `0004 done, waiting`) — never an empty response.
 - While it runs, the session stays free for the user. If they ask for status,
   `ledger RUN` is enough; the background wait keeps going.
-- On `timeout: N running`, start it again in the background. No commentary.
+- On `timeout: N running`, start it again in the background and reply `waiting`.
 
 Reports:
 - Accept successful execution reports. No artifact inspection, sampling, or

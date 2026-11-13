@@ -112,7 +112,7 @@ def cmd_init(args):
             cfg[k] = v
     cfg["dir"] = str(root)
     if os.environ.get("OPENCODE_SESSION_ID"):
-        cfg["session"] = os.environ["OPENCODE_SESSION_ID"]
+        cfg["orchestrator"] = os.environ["OPENCODE_SESSION_ID"]
     cfg_path.write_text(json.dumps(cfg, indent=2) + "\n")
     remember(root)
     brief = rd / "brief.md"
@@ -255,11 +255,14 @@ def cmd_wait(args):
             tasks = fold(rd)
             print(summary(tasks))
             if not any(t["status"] in ("pending", "running") for t in tasks.values()):
-                bad = any(t["status"] == "failed" or (t["status"] == "reported" and t.get("worker") != "done") for t in tasks.values())
-                starts = [t["started"] for t in tasks.values() if t.get("started")]
-                ends = [t["finished"] for t in tasks.values() if t.get("finished")]
-                took = f" | {fmt_dur(max(ends) - min(starts))}" if starts and ends else ""
-                notify(f"{args.run}: {summary(tasks).split(' | ')[0]}{took}", "rgb(fb4934)" if bad else "rgb(d79921)")
+                orch_sid = cfg.get("orchestrator")
+                in_ocm = bool(orch_sid and str(session_info(orch_sid).get("title") or "").startswith("ocm/"))
+                if not in_ocm:
+                    bad = any(t["status"] == "failed" or (t["status"] == "reported" and t.get("worker") != "done") for t in tasks.values())
+                    starts = [t["started"] for t in tasks.values() if t.get("started")]
+                    ends = [t["finished"] for t in tasks.values() if t.get("finished")]
+                    took = f" | {fmt_dur(max(ends) - min(starts))}" if starts and ends else ""
+                    notify(f"{args.run}: {summary(tasks).split(' | ')[0]}{took}", "rgb(fb4934)" if bad else "rgb(d79921)")
             return
         if time.time() >= deadline:
             print(f"timeout: {len(running)} running")

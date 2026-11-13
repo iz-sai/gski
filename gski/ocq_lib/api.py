@@ -25,6 +25,7 @@ DEFAULT_CFG = {
     "concurrency": 1,
     "max_attempts": 3,
     "permission": {},
+    "orchestrator": None,
 }
 
 DENY_MSG = "ocq: this specific call is not permitted. Do not retry it; continue without it or write status failed."
@@ -147,7 +148,7 @@ def resolve_model(agent, model, variant):
         if not info:
             die(f"unknown agent: {agent}")
         m = info.get("model") or {}
-        prov, mid = m.get("providerID"), m.get("id")
+        prov, mid, var = m.get("providerID"), m.get("id"), var or m.get("variant")
     if not mid:
         src = "default"
         d = _retry(lambda: fetch("/api/model/default")) or {}

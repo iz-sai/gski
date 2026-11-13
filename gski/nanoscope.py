@@ -46,7 +46,7 @@ def register(subparsers):
         "--model",
         choices=list(MODELS.keys()),
         default="3-8",
-        help="model: 3-8 (gemini-3.8-flash, default) or argon (gemini-4-argon)",
+        help="model: 3-8 (gemini-3.8-flash, default) or carbon (gemini-4-carbon)",
     )
     p.add_argument(
         "--media-res",

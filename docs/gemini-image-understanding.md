@@ -7,7 +7,7 @@ In addition to their general multimodal capabilities, Gemini models offer
 **enhanced accuracy** for specific use cases like [object detection](https://ai.google.dev/gemini-api/docs/image-understanding#object-detection)
 and [segmentation](https://ai.google.dev/gemini-api/docs/image-understanding#segmentation), through additional training.
 
-- `gemini-3.8-flash` (default) and `gemini-4-argon` are the supported models for image understanding.
+- `gemini-3.8-flash` (default) and `gemini-4-carbon` are the supported models for image understanding.
 
 ## Passing images to Gemini
 

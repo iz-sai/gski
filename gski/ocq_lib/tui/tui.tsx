@@ -1,4 +1,5 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs"
+import { homedir } from "node:os"
 import { dirname, join } from "node:path"
 import { Plugin } from "@opencode/plugin/tui"
 import { TextAttributes, type RGBA, type ScrollBoxRenderable } from "@opentui/core"
@@ -6,6 +7,7 @@ import { useTerminalDimensions } from "@opentui/solid"
 import { createEffect, createMemo, createSignal, For, on, onCleanup, Show } from "solid-js"
 
 const ROUTE = "ocq"
+const REGISTRY = join(process.env.XDG_STATE_HOME || join(homedir(), ".local", "state"), "ocq", "projects")
 const ORDER = ["running", "reported", "failed", "pending", "done"]
 const BAR = ["done", "reported", "running", "failed", "pending"]
 const HEAD = 12
@@ -27,6 +29,15 @@ type Run = {
 }
 type Act = { text: string; status: string }
 type Live = { state: string; cost: number; tokens?: Tokens; activity: Act[] }
+type Stream = Record<string, any> & {
+  id: string
+  status?: string
+  session?: string
+  dir?: string
+  manager?: string
+  updated?: number
+}
+type Ocm = { root: string; manager?: string; streams: Stream[] }
 
 const now = () => Math.floor(Date.now() / 1000)
 const round4 = (n: number) => Math.round(n * 1e4) / 1e4
@@ -88,11 +99,11 @@ function fold(text: string) {
   return tasks
 }
 
-function findRoot(dir: string) {
+function findUp(dir: string, name: string) {
   let d = dir
   while (true) {
     try {
-      if (statSync(join(d, ".ocq")).isDirectory()) return d
+      if (statSync(join(d, name)).isDirectory()) return d
     } catch {}
     const p = dirname(d)
     if (p === d) return undefined
@@ -107,6 +118,67 @@ const stamp = (p: string) => {
   } catch {
     return ""
   }
+}
+
+const ocmCache = new Map<string, { key: string; ocm: Ocm }>()
+
+function loadOcm(root: string): Ocm | undefined {
+  const lp = join(root, ".ocm", "ledger.jsonl")
+  const cp = join(root, ".ocm", "ocm.json")
+  const key = [stamp(lp), stamp(cp)].join("|")
+  if (key === "|") return undefined
+  const hit = ocmCache.get(root)
+  if (hit && hit.key === key) return hit.ocm
+  let cfg: Record<string, any> = {}
+  try {
+    cfg = JSON.parse(readFileSync(cp, "utf8"))
+  } catch {}
+  const byId = new Map<string, Stream>()
+  if (existsSync(lp)) {
+    for (const line of readFileSync(lp, "utf8").split("\n")) {
+      if (!line.trim()) continue
+      try {
+        const ev = JSON.parse(line)
+        if (!ev || ev.id == null) continue
+        const { t: ts, denied: _d, ...rest } = ev
+        const s = byId.get(ev.id) ?? { id: ev.id }
+        s.updated = ts
+        Object.assign(s, rest)
+        byId.set(ev.id, s)
+      } catch {}
+    }
+  }
+  const streams = [...byId.values()].sort((a, b) => (b.updated || 0) - (a.updated || 0))
+  const ocm: Ocm = { root, manager: cfg.manager, streams }
+  ocmCache.set(root, { key, ocm })
+  return ocm
+}
+
+function scanOcm(dir: string, runsList: Run[]): Ocm | undefined {
+  const up = findUp(dir, ".ocm")
+  if (up) {
+    const direct = loadOcm(up)
+    if (direct) return direct
+  }
+  let projects: string[] = []
+  try {
+    projects = readFileSync(REGISTRY, "utf8").split("\n").filter(Boolean)
+  } catch {
+    return undefined
+  }
+  const orchIds = new Set(runsList.map((r) => r.cfg?.orchestrator).filter(Boolean))
+  for (const p of projects) {
+    const ocm = loadOcm(p)
+    if (!ocm) continue
+    if (
+      ocm.streams.some(
+        (s) => (s.session && orchIds.has(s.session)) || (s.dir && (dir === s.dir || dir.startsWith(s.dir + "/"))),
+      )
+    ) {
+      return ocm
+    }
+  }
+  return undefined
 }
 
 const cache = new Map<string, { key: string; run: Run }>()
@@ -213,10 +285,12 @@ export default Plugin.define({
 
     const [selRun, setSelRun] = createSignal<string>()
     const [selId, setSelId] = createSignal<string>()
-    const [orchSid, setOrchSid] = createSignal<string>()
     const [brief, setBrief] = createSignal(false)
     const [pane, setPane] = createSignal(true)
     const [zoom, setZoom] = createSignal(false)
+    const [ocm, setOcm] = createSignal<Ocm>()
+    const [orchSession, setOrchSession] = createSignal<string>()
+    const [mgrByDir, setMgrByDir] = createSignal<Record<string, string>>({})
 
     const statusColor = (s: string): RGBA => {
       const t = context.theme
@@ -227,17 +301,48 @@ export default Plugin.define({
       return t.text.muted
     }
 
-    const currentDir = () => {
-      const route = context.ui.router.current()
-      const sid = route.type === "session" ? route.sessionID : (route as any).data?.sessionID
+    const isWorkerSession = (sid?: string) => !!sid && runs().some((run) => run.tasks.some((t) => t.session === sid))
+    const isOcmOrch = (sid?: string) => !!sid && !!ocm()?.streams.some((s) => s.session === sid)
+    const isOcmMgr = (sid?: string) =>
+      !!sid && (ocm()?.manager === sid || !!ocm()?.streams.some((s) => s.manager === sid))
+
+    const activeSessionId = () => {
+      const r = context.ui.router.current()
+      return r.type === "session" ? r.sessionID : (r as any).data?.sessionID
+    }
+
+    const activeDir = () => {
+      const sid = activeSessionId()
       const d = sid ? (context.data.session.get(sid) as any)?.location?.directory : undefined
       return d || context.location?.directory || context.data.location.default()?.directory || process.cwd()
     }
 
+    const trackSession = (sid?: string) => {
+      if (!sid) return
+      const sInfo = context.data.session.get(sid) as any
+      if (!sInfo) return
+      const sDir = sInfo.location?.directory
+      if (sInfo.agent === "manager" || isOcmMgr(sid)) {
+        if (sDir) setMgrByDir((m) => (m[sDir] === sid ? m : { ...m, [sDir]: sid }))
+        return
+      }
+      if (
+        sInfo.agent === "orchestrator" ||
+        isOcmOrch(sid) ||
+        (sInfo.agent !== "worker" && !isWorkerSession(sid) && !sInfo.title?.startsWith("ocq/"))
+      ) {
+        setOrchSession(sid)
+      }
+    }
+
     const refreshFiles = () => {
-      const r = findRoot(currentDir())
+      const dir = activeDir()
+      const r = findUp(dir, ".ocq")
       if (r !== root()) setRoot(r)
-      setRuns(r ? scan(r) : [])
+      const rs = r ? scan(r) : []
+      setRuns(rs)
+      setOcm(scanOcm(dir, rs))
+      trackSession(activeSessionId())
     }
 
     const current = createMemo(() => {
@@ -353,10 +458,7 @@ export default Plugin.define({
       const r = route()
       if (r.type === "plugin" && r.name === ROUTE) return close()
       refreshFiles()
-      if (r.type === "session" && r.sessionID) {
-        const isWorker = runs().some((run) => run.tasks.some((t) => t.session === r.sessionID))
-        if (!isWorker) setOrchSid(r.sessionID)
-      }
+      if (r.type === "session") trackSession(r.sessionID)
       context.ui.dialog.clear()
       const returnRoute =
         r.type === "session"
@@ -369,6 +471,123 @@ export default Plugin.define({
         name: ROUTE,
         data: { returnRoute, sessionID: r.type === "session" ? r.sessionID : undefined },
       })
+    }
+
+    const validSession = async (sid?: string): Promise<string | undefined> => {
+      if (!sid) return undefined
+      const cached = context.data.session.get(sid) as any
+      if (cached) return cached.time?.archived ? undefined : sid
+      const info: any = await context.client.session.get({ sessionID: sid }).catch(() => undefined)
+      const s = info?.data ?? info
+      return s?.id && !s?.time?.archived ? sid : undefined
+    }
+
+    const managerDir = () => ocm()?.root ?? root() ?? activeDir()
+
+    const hasManager = createMemo(() => {
+      if (ocm()) return true
+      const d = managerDir()
+      if (d && mgrByDir()[d]) return true
+      try {
+        return context.data.session
+          .list()
+          .some((s: any) => s?.location?.directory === d && s?.agent === "manager" && !s?.time?.archived)
+      } catch {
+        return false
+      }
+    })
+
+    const resolveOrchestrator = async (): Promise<string | undefined> => {
+      const cur = current()
+      if (cur?.cfg?.orchestrator) return cur.cfg.orchestrator
+      const m = ocm()
+      if (!cur && m) {
+        const st = m.streams.find((s) => s.status === "running" && s.session) ?? m.streams.find((s) => s.session)
+        const ok = await validSession(st?.session)
+        if (ok) return ok
+      }
+      if (orchSession() && !isOcmMgr(orchSession())) return orchSession()
+      for (const r of runs()) {
+        if (r.cfg?.orchestrator) return r.cfg.orchestrator
+      }
+      const d = root() ?? m?.root
+      const canBeOrch = (s: any) =>
+        s?.agent !== "manager" &&
+        s?.agent !== "worker" &&
+        !isOcmMgr(s?.id) &&
+        !isWorkerSession(s?.id) &&
+        !s?.title?.startsWith("ocq/") &&
+        !s?.time?.archived
+      if (d) {
+        try {
+          const list = listOf(await context.client.session.list({ directory: d, limit: 30 }).catch(() => undefined))
+          const match = list.find((s: any) => s?.agent === "orchestrator" && !s?.time?.archived) ?? list.find(canBeOrch)
+          if (match?.id) {
+            setOrchSession(match.id)
+            return match.id
+          }
+        } catch {}
+        try {
+          const cached = context.data.session.list()
+          const match =
+            cached.find(
+              (s: any) => s?.location?.directory === d && s?.agent === "orchestrator" && !s?.time?.archived,
+            ) ?? cached.find((s: any) => s?.location?.directory === d && canBeOrch(s))
+          if (match?.id) {
+            setOrchSession(match.id)
+            return match.id
+          }
+        } catch {}
+      }
+      return undefined
+    }
+
+    const resolveManager = async (): Promise<string | undefined> => {
+      const m = ocm()
+      const orchSid = current()?.cfg?.orchestrator
+      if (m && orchSid) {
+        const matched = m.streams.find((s) => s.session === orchSid && s.manager)
+        const ok = await validSession(matched?.manager)
+        if (ok) return ok
+      }
+      if (m?.manager) {
+        const ok = await validSession(m.manager)
+        if (ok) return ok
+      }
+      if (m) {
+        for (const s of m.streams) {
+          const ok = await validSession(s.manager)
+          if (ok) return ok
+        }
+      }
+      const d = managerDir()
+      if (d && mgrByDir()[d]) {
+        const ok = await validSession(mgrByDir()[d])
+        if (ok) return ok
+      }
+      if (d) {
+        try {
+          const list = listOf(await context.client.session.list({ directory: d, limit: 30 }).catch(() => undefined))
+          const match = list.find((s: any) => s?.agent === "manager" && !s?.time?.archived)
+          if (match?.id) {
+            setMgrByDir((prev) => ({ ...prev, [d]: match.id }))
+            return match.id
+          }
+        } catch {}
+        try {
+          const cached = [...context.data.session.list()].sort(
+            (a: any, b: any) => (b?.time?.updated || 0) - (a?.time?.updated || 0),
+          )
+          const match = cached.find(
+            (s: any) => s?.location?.directory === d && s?.agent === "manager" && !s?.time?.archived,
+          )
+          if (match?.id) {
+            setMgrByDir((prev) => ({ ...prev, [d]: match.id }))
+            return match.id
+          }
+        } catch {}
+      }
+      return undefined
     }
 
     function Bar(props: { counts: Record<string, number>; total: number; width: number }) {
@@ -599,9 +818,14 @@ export default Plugin.define({
         if (!t?.session) return context.ui.toast.show({ message: "No session for this task", variant: "warning" })
         context.ui.router.navigate({ type: "session", sessionID: t.session })
       }
-      const openOrchestrator = () => {
-        const sid = current()?.cfg?.session || current()?.cfg?.orchestrator || orchSid()
-        if (!sid) return context.ui.toast.show({ message: "No orchestrator session recorded", variant: "warning" })
+      const openOrchestratorSession = async () => {
+        const sid = await resolveOrchestrator()
+        if (!sid) return context.ui.toast.show({ message: "No orchestrator session found", variant: "warning" })
+        context.ui.router.navigate({ type: "session", sessionID: sid })
+      }
+      const openManagerSession = async () => {
+        const sid = await resolveManager()
+        if (!sid) return context.ui.toast.show({ message: "No manager session found", variant: "warning" })
         context.ui.router.navigate({ type: "session", sessionID: sid })
       }
       const half = () => Math.max(1, Math.floor(perPage() / 2))
@@ -620,7 +844,8 @@ export default Plugin.define({
           { bind: "shift+j", title: "Scroll detail down", group: "ocq", run: () => detail?.scrollBy(3) },
           { bind: "shift+k", title: "Scroll detail up", group: "ocq", run: () => detail?.scrollBy(-3) },
           { bind: "return,o", title: "Open worker session", group: "ocq", run: openSession },
-          { bind: "shift+o", title: "Open orchestrator session", group: "ocq", run: openOrchestrator },
+          { bind: "shift+o,O", title: "Open orchestrator session", group: "ocq", run: openOrchestratorSession },
+          { bind: "m,shift+m,M", title: "Open manager session", group: "ocq", run: openManagerSession },
           { bind: "space", title: "Zoom detail", group: "ocq", run: () => setZoom((z) => !z) },
           { bind: "p", title: "Toggle detail pane", group: "ocq", run: () => setPane((v) => !v) },
           { bind: "b", title: "Toggle brief", group: "ocq", run: () => setBrief((v) => !v) },
@@ -781,9 +1006,7 @@ export default Plugin.define({
           <box flexGrow={1} />
           <box height={1} flexShrink={0} />
           <text wrapMode="none" truncate height={1} flexShrink={0} fg={muted()}>
-            {
-              "j/k task    gg/G ends    ^d/^u page    h/l run    ⏎/o worker    O orch    space zoom    p pane    J/K scroll    b brief    r refresh    q close"
-            }
+            {`j/k task    gg/G ends    ^d/^u page    h/l run    ⏎ worker    O orch    ${hasManager() ? "M mgr    " : ""}space zoom    p pane    J/K scroll    b brief    r refresh    q close`}
           </text>
         </box>
       )

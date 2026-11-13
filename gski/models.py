@@ -1,6 +1,6 @@
 GEMINI_TEXT = {
     "3-8": "gemini-3.8-flash",
-    "argon": "gemini-4-argon",
+    "carbon": "gemini-4-carbon",
 }
 
 GEMINI_TRANSCRIBE = "gemini-3.5-transcribe"
