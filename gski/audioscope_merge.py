@@ -1,6 +1,7 @@
 from difflib import SequenceMatcher
 
 from gski.audioscope_utils import ChunkSpec, format_ts, parse_ts, shift_ts
+from gski.audioscope_validators import est_speech_sec
 
 
 DUP_SIMILARITY_THRESHOLD = 0.6
@@ -70,18 +71,16 @@ def _insert_gap_placeholders(segments: list[dict]) -> list[dict]:
     if not segments:
         return segments
     out: list[dict] = []
-    prev_sec: int | None = None
+    prev_end: int | None = None
     for seg in segments:
         if seg.get("s") == SYSTEM_SPEAKER:
             out.append(seg)
-            # don't update prev_sec based on system markers — they don't
-            # represent real coverage
             continue
         cur_sec = _safe_parse(seg.get("t") or "")
-        if prev_sec is not None and cur_sec is not None:
-            diff = cur_sec - prev_sec
+        if prev_end is not None and cur_sec is not None:
+            diff = cur_sec - prev_end
             if diff > GAP_PLACEHOLDER_THRESHOLD_SEC:
-                mid = prev_sec + diff // 2
+                mid = prev_end + diff // 2
                 mins = diff // 60
                 secs = diff % 60
                 out.append(
@@ -93,7 +92,7 @@ def _insert_gap_placeholders(segments: list[dict]) -> list[dict]:
                 )
         out.append(seg)
         if cur_sec is not None:
-            prev_sec = cur_sec
+            prev_end = cur_sec + est_speech_sec(seg.get("x"))
     return out
 
 

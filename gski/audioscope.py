@@ -12,7 +12,8 @@ from .models import GEMINI_TEXT
 MODELS = {
     **GEMINI_TEXT,
     "flash": GEMINI_TEXT.get("3-8", "gemini-3.8-flash"),
-    "pro": "gemini-3.1-pro-preview",
+    "pro": GEMINI_TEXT.get("carbon", "gemini-4-carbon"),
+    "3-1-pro": "gemini-3.1-pro-preview",
 }
 
 PROMPT_TRANSCRIBE = "Generate a transcript of the speech."
@@ -368,7 +369,7 @@ def run(args):
             print(f"warning: could not probe duration ({e}); using single-shot path", file=sys.stderr)
             duration = 0.0
 
-        threshold = args.chunk_len_sec + args.overlap_sec + 60
+        threshold = min(args.chunk_len_sec, 900) + args.overlap_sec + 60
         if duration > threshold:
             print(
                 f"long audio detected ({duration:.0f}s > {threshold}s threshold), chunking...",

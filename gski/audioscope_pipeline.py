@@ -70,8 +70,8 @@ def _chunk_is_unhealthy(record: dict) -> bool:
 
 def _validate_chunk(segments, chunk_duration_sec):
     for name, result in [
-        ("duration", check_duration(segments, chunk_duration_sec)),
         ("loop", check_loop(segments)),
+        ("duration", check_duration(segments, chunk_duration_sec)),
         ("gaps", check_gaps(segments)),
     ]:
         if not result.ok:
@@ -276,16 +276,14 @@ def salvage_chunk_with_subchunks(
     timestamps: bool,
     tmp_dir,
     subchunk_sec: int = 180,
+    prev_tail=None,
 ):
-    """Split a failed chunk into fixed-length sub-chunks (no overlap),
-    transcribe each on the given model, stitch results into the parent
-    chunk's local time frame (relative to chunk.start).
-    Returns (segments_shifted, attempts_summary_list)."""
     from gski.audioscope_utils import ChunkSpec, parse_ts, format_ts
 
     tmp_dir = Path(tmp_dir)
     all_segments: list[dict] = []
     all_attempts: list[dict] = []
+    cur_tail = prev_tail
 
     offset_in_parent = 0
     sub_idx = 0
@@ -294,9 +292,7 @@ def salvage_chunk_with_subchunks(
         sub_start = chunk.start + offset_in_parent
         sub_end = sub_start + sub_len
         sub_path = tmp_dir / f"subchunk_{chunk.index:03d}_{sub_idx:03d}.ogg"
-        # Extract from the original audio file.
         extract_chunk(audio_path, str(sub_path), sub_start, sub_end)
-        # Distinct index space for sub-chunks so debug artefacts don't collide.
         sub_spec = ChunkSpec(
             index=1000 * (chunk.index + 1) + sub_idx,
             start=sub_start,
@@ -310,7 +306,7 @@ def salvage_chunk_with_subchunks(
             chunk_path=str(sub_path),
             chunk=sub_spec,
             total_chunks=1,
-            prev_tail=None,
+            prev_tail=cur_tail,
             diarize=diarize,
             timestamps=timestamps,
         )
@@ -321,7 +317,6 @@ def salvage_chunk_with_subchunks(
             "attempts": sub_attempts,
             "segment_count": len(sub_segments),
         })
-        # Shift timestamps from sub-local to parent-local.
         for seg in sub_segments:
             new = dict(seg)
             t = seg.get("t")
@@ -331,6 +326,9 @@ def salvage_chunk_with_subchunks(
                 except ValueError:
                     pass
             all_segments.append(new)
+        real = [s for s in sub_segments if s.get("s") != "__system__"]
+        if real:
+            cur_tail = real[-TAIL_SEGMENTS_FOR_CONTEXT:]
         offset_in_parent += sub_len
         sub_idx += 1
 
@@ -349,7 +347,7 @@ def transcribe_long(
     chunk_len_sec: int = 900,
     overlap_sec: int = 30,
     salvage: bool = False,
-    salvage_model: str = "gemini-3.1-pro-preview",
+    salvage_model: str = "gemini-4-carbon",
     salvage_subchunk_sec: int = 180,
     salvage_max_depth: int = 2,
 ):
@@ -449,13 +447,17 @@ def transcribe_long(
             if not _chunk_is_unhealthy(record):
                 continue
             chunk, _orig_segments = chunk_results[i]
+            salvage_prev_tail = None
+            if i > 0:
+                prev_real = [s for s in chunk_results[i - 1][1] if s.get("s") != "__system__"]
+                if prev_real:
+                    salvage_prev_tail = prev_real[-TAIL_SEGMENTS_FOR_CONTEXT:]
             print(f"progress: salvaging chunk {chunk.index + 1}/{len(chunks)} "
                   f"({format_ts(chunk.start)}–{format_ts(chunk.end)})",
                   file=sys.stderr, flush=True)
             ladder_results: dict = {}
 
-            # Step 1: pro fallback on the full chunk.
-            if salvage_max_depth >= 1:
+            if salvage_max_depth >= 1 and salvage_model != model:
                 if len(chunks) == 1:
                     sc_path = str(audio_path)
                 else:
@@ -467,7 +469,7 @@ def transcribe_long(
                     tmp_dir=tmp_dir,
                     chunk_path=sc_path,
                     total_chunks=len(chunks),
-                    prev_tail=None,
+                    prev_tail=salvage_prev_tail,
                     diarize=diarize, timestamps=timestamps,
                 )
                 pro_ok = any(a.get("ok") for a in pro_attempts)
@@ -485,15 +487,16 @@ def transcribe_long(
                     )
                     continue
 
-            # Step 2: sub-chunk with flash.
             if salvage_max_depth >= 2:
+                sub_flash_model = "gemini-3.8-flash" if model == salvage_model else model
                 sub_segs, sub_attempts = salvage_chunk_with_subchunks(
                     client, chunk,
                     audio_path=audio_path,
-                    model=model,  # flash
+                    model=sub_flash_model,
                     diarize=diarize, timestamps=timestamps,
                     tmp_dir=tmp_dir,
                     subchunk_sec=salvage_subchunk_sec,
+                    prev_tail=salvage_prev_tail,
                 )
                 ladder_results["subchunk_flash"] = {
                     "segment_count": len(sub_segs),
@@ -508,7 +511,6 @@ def transcribe_long(
                     )
                     continue
 
-            # Step 3: sub-chunk with pro.
             if salvage_max_depth >= 3:
                 sub_segs, sub_attempts = salvage_chunk_with_subchunks(
                     client, chunk,
@@ -517,6 +519,7 @@ def transcribe_long(
                     diarize=diarize, timestamps=timestamps,
                     tmp_dir=tmp_dir,
                     subchunk_sec=salvage_subchunk_sec,
+                    prev_tail=salvage_prev_tail,
                 )
                 ladder_results["subchunk_pro"] = {
                     "segment_count": len(sub_segs),

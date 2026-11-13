@@ -11,27 +11,37 @@ class ValidationResult:
     reason: str | None = None
 
 
-def _last_ts_sec(segments) -> int | None:
+_WORD_RE = re.compile(r"\w+", re.UNICODE)
+
+
+def est_speech_sec(text: str | None, words_per_sec: float = 2.5) -> int:
+    if not text:
+        return 0
+    return int(len(_WORD_RE.findall(text)) / words_per_sec)
+
+
+def _last_ts_and_text(segments) -> tuple[int | None, str]:
     for seg in reversed(segments):
         if seg.get("t"):
             try:
-                return parse_ts(seg["t"])
+                return parse_ts(seg["t"]), seg.get("x") or ""
             except ValueError:
                 continue
-    return None
+    return None, ""
 
 
 def check_duration(segments, chunk_duration_sec: int, threshold_sec: int = 60) -> ValidationResult:
     if not segments:
         return ValidationResult(False, "empty transcript")
-    last = _last_ts_sec(segments)
+    last, last_text = _last_ts_and_text(segments)
     if last is None:
         return ValidationResult(False, "no parseable timestamps")
-    delta = chunk_duration_sec - last
+    est_end = last + est_speech_sec(last_text)
+    delta = chunk_duration_sec - est_end
     if delta > threshold_sec:
         return ValidationResult(
             False,
-            f"transcript likely truncated: last_ts={last}s, chunk={chunk_duration_sec}s (delta={delta}s)"
+            f"transcript likely truncated: last_ts={last}s (est_end={est_end}s), chunk={chunk_duration_sec}s (delta={delta}s)"
         )
     if last - chunk_duration_sec > threshold_sec:
         return ValidationResult(
@@ -39,9 +49,6 @@ def check_duration(segments, chunk_duration_sec: int, threshold_sec: int = 60) -
             f"last_ts {last}s exceeds chunk duration {chunk_duration_sec}s (likely loop)"
         )
     return ValidationResult(True)
-
-
-_WORD_RE = re.compile(r"\w+", re.UNICODE)
 
 
 def check_loop(segments, n: int = 5, max_repeats: int = 4) -> ValidationResult:
@@ -63,7 +70,7 @@ def check_loop(segments, n: int = 5, max_repeats: int = 4) -> ValidationResult:
 
 
 def check_gaps(segments, max_gap_sec: int = 180) -> ValidationResult:
-    prev_sec = None
+    prev_end = None
     for seg in segments:
         if not seg.get("t"):
             continue
@@ -71,10 +78,10 @@ def check_gaps(segments, max_gap_sec: int = 180) -> ValidationResult:
             cur = parse_ts(seg["t"])
         except ValueError:
             continue
-        if prev_sec is not None and cur - prev_sec > max_gap_sec:
+        if prev_end is not None and cur - prev_end > max_gap_sec:
             return ValidationResult(
                 False,
-                f"coverage gap {cur - prev_sec}s at {seg['t']} (threshold {max_gap_sec}s)"
+                f"coverage gap {cur - prev_end}s at {seg['t']} (threshold {max_gap_sec}s)"
             )
-        prev_sec = cur
+        prev_end = cur + est_speech_sec(seg.get("x"))
     return ValidationResult(True)
