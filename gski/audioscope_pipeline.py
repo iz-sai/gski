@@ -488,7 +488,7 @@ def transcribe_long(
                     continue
 
             if salvage_max_depth >= 2:
-                sub_flash_model = "gemini-3.8-flash" if model == salvage_model else model
+                sub_flash_model = "gemini-4-hydrogen" if model == salvage_model else model
                 sub_segs, sub_attempts = salvage_chunk_with_subchunks(
                     client, chunk,
                     audio_path=audio_path,

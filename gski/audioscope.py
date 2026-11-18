@@ -11,7 +11,7 @@ from .models import GEMINI_TEXT
 
 MODELS = {
     **GEMINI_TEXT,
-    "flash": GEMINI_TEXT.get("3-8", "gemini-3.8-flash"),
+    "flash": GEMINI_TEXT.get("hydrogen", "gemini-4-hydrogen"),
     "pro": GEMINI_TEXT.get("carbon", "gemini-4-carbon"),
     "3-1-pro": "gemini-3.1-pro-preview",
 }
