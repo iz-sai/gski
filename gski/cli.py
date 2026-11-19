@@ -34,6 +34,7 @@ def main():
     from gski.llm_process import register as lp_register
     from gski.nanobanana import register as nb_register
     from gski.nanoscope import register as ns_register
+    from gski.nightwatch import register as nw_register
     from gski.ocm import register as ocm_register
     from gski.ocq import register as ocq_register
     from gski.omni import register as omni_register
@@ -52,6 +53,7 @@ def main():
     lp_register(sub)
     nb_register(sub)
     ns_register(sub)
+    nw_register(sub)
     ocm_register(sub)
     ocq_register(sub)
     omni_register(sub)

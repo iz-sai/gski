@@ -23,16 +23,19 @@ from gski.ocq_lib.api import (
     messages,
     pending_input,
     send_prompt,
+    send_synthetic,
     session_info,
     shells,
     sweep,
 )
-from gski.ocq_lib.ledger import cut, fold as fold_ocq, parse_allow, remember, sum_tokens, summary as ocq_summary
+from gski.ocq_lib.ledger import cut, fold as fold_ocq, known_projects, parse_allow, remember, sum_tokens, summary as ocq_summary
 
 NAME_RE = re.compile(r"^[\w.-]+$")
+PARENT_TARGETS = ("..", "manager", "parent")
 OCM_RULES = [
     {"action": "question", "resource": "*", "effect": "deny"},
     {"action": "shell", "resource": "gski ocm*", "effect": "deny"},
+    {"action": "shell", "resource": "gski ocm send *", "effect": "allow"},
     {"action": "external_directory", "resource": "/tmp/opencode/**", "effect": "allow"},
 ]
 EVENT_TYPES = (
@@ -88,6 +91,45 @@ def touch_manager(base, streams=None):
     return sid
 
 
+def read_manager(base, s):
+    p = base / "ocm.json"
+    try:
+        mgr = json.loads(p.read_text()).get("manager") if p.exists() else None
+    except (OSError, ValueError):
+        mgr = None
+    return mgr or s.get("manager")
+
+
+def caller_stream(sid):
+    if not sid:
+        return None
+    roots = []
+    local = ocm_root()
+    if (local / ".ocm" / "ledger.jsonl").exists():
+        roots.append(local)
+    meta = session_info(sid).get("metadata") or {}
+    if meta.get("ocm_root"):
+        roots.append(Path(meta["ocm_root"]))
+    roots.extend(Path(p) for p in known_projects())
+    seen = set()
+    for r in roots:
+        try:
+            r = r.resolve()
+        except OSError:
+            continue
+        if r in seen:
+            continue
+        seen.add(r)
+        base = r / ".ocm"
+        if not (base / "ledger.jsonl").exists():
+            continue
+        streams = fold(base)
+        for s in streams.values():
+            if s.get("session") == sid:
+                return base, streams, s
+    return None
+
+
 def base_dir(must=True):
     base = ocm_root() / ".ocm"
     if must and not (base / "ledger.jsonl").exists():
@@ -138,11 +180,10 @@ def rules_for(allow):
 def build_prompt(name, text):
     return (
         f"ocm stream: {name}\n"
-        "You are working with a Manager session (your upstream user in this chat).\n"
-        "Follow your normal orchestrator workflow (`gski ocq` for substantial/repetitive work, "
-        "direct execution only for small in-scope steps).\n"
-        "Reply in plain text when proposing a plan, asking a question, or reporting completion "
-        "(do not use the question tool).\n\n"
+        "Upstream is a Manager session. Follow your normal orchestrator workflow (`gski ocq` for substantial/repetitive work, "
+        "direct execution only for small in-scope steps). Do not use the question tool.\n"
+        "Upstream receives your turn output only when you stop with no background jobs running; "
+        'to reply or message upstream while keeping background jobs running, run: gski ocm send .. "..."\n\n'
         f"Task:\n{text}"
     )
 
@@ -264,7 +305,7 @@ def open_events(timeout):
 
 
 def cmd_start(args):
-    if not NAME_RE.match(args.name):
+    if args.name in PARENT_TARGETS or not NAME_RE.match(args.name):
         die(f"invalid stream name: {args.name}")
     base = ensure_base()
     streams = fold(base)
@@ -276,7 +317,8 @@ def cmd_start(args):
     remember(d)
     mgr = touch_manager(base, streams)
     allow = list(args.allow or [])
-    s, used = create_session(f"ocm/{args.name}", "orchestrator", args.model, args.variant, rules_for(allow), d)
+    meta = {"ocm_root": str(base.parent), "stream": args.name}
+    s, used = create_session(f"ocm/{args.name}", "orchestrator", args.model, args.variant, rules_for(allow), d, meta)
     now = time.time()
     send_prompt(s["id"], build_prompt(args.name, args.text))
     append(
@@ -298,6 +340,8 @@ def cmd_start(args):
 def cmd_ls(args):
     base = ocm_root() / ".ocm"
     streams = fold(base) if (base / "ledger.jsonl").exists() else {}
+    if streams:
+        touch_manager(base, streams)
     if not streams:
         print("no streams")
         return
@@ -309,7 +353,12 @@ def cmd_ls(args):
         if s["status"] == "running" and s.get("session"):
             cost = max(cost, session_info(s["session"]).get("cost") or 0)
         denied = f" [denied {len(s['denied'])}]" if s.get("denied") else ""
-        info = s.get("note") if s["status"] in ("reported", "done", "failed") and s.get("note") else s.get("task", "")
+        if s["status"] in ("reported", "done", "failed") and s.get("note"):
+            info = s["note"]
+        elif s["status"] == "running" and s.get("msg"):
+            info = f"msg: {s['msg']}"
+        else:
+            info = s.get("task", "")
         print(cut(f"{s['id']} {s['status']} ${cost:.2f}{denied} | {info}"))
         for rname, rsum, _, _ in ocq_runs(s):
             print(cut(f"  ocq/{rname}: {rsum}"))
@@ -317,7 +366,9 @@ def cmd_ls(args):
 
 def cmd_show(args):
     base = base_dir()
-    s = get_stream(fold(base), args.name)
+    streams = fold(base)
+    touch_manager(base, streams)
+    s = get_stream(streams, args.name)
     cost = s.get("cost") or 0
     if s["status"] == "running" and s.get("session"):
         cost = max(cost, session_info(s["session"]).get("cost") or 0)
@@ -328,6 +379,8 @@ def cmd_show(args):
     print(f"task: {s.get('task')}")
     if s.get("note"):
         print(f"note: {s['note']}")
+    if s.get("msg"):
+        print(f"msg: {s['msg']}")
     for d in s.get("denied") or []:
         print(f"denied: {d}")
     for rname, rsum, _, _ in ocq_runs(s):
@@ -417,6 +470,23 @@ def cmd_wait(args):
 
 
 def cmd_send(args):
+    caller = os.environ.get("OPENCODE_SESSION_ID")
+    mine = caller_stream(caller) if caller else None
+    if mine:
+        base, _, s = mine
+        if args.name not in PARENT_TARGETS:
+            die("orchestrator can only send to ..")
+        if args.allow:
+            die("--allow is only for manager -> stream")
+        mgr = read_manager(base, s)
+        if not mgr:
+            die("no manager session recorded in .ocm/ocm.json")
+        send_synthetic(mgr, f"[ocm/{s['id']}]\n{args.text}", f"ocm/{s['id']}")
+        append(base, id=s["id"], msg=cut(args.text, 300))
+        print(f"{s['id']} -> .. sent")
+        return
+    if args.name in PARENT_TARGETS:
+        die("not in an orchestrator session")
     base = base_dir()
     streams = fold(base)
     s = get_stream(streams, args.name)
@@ -424,11 +494,11 @@ def cmd_send(args):
         die(f"{s['id']} is {s['status']}: cannot send (start a new stream)")
     mgr = touch_manager(base, streams)
     allow = list(dict.fromkeys((s.get("allow") or []) + list(args.allow or [])))
-    if args.allow:
-        api("PATCH", f"/api/session/{s['session']}", {"permissions": rules_for(allow)})
+    api("PATCH", f"/api/session/{s['session']}", {"permissions": rules_for(allow)})
     delivery = "queue" if args.queue else "steer"
+    prompt = f'[ocm manager — reply via `gski ocm send .. "..."` while keeping bg jobs running]\n{args.text}'
     now = time.time()
-    send_prompt(s["session"], args.text, delivery)
+    send_prompt(s["session"], prompt, delivery)
     was = s["status"]
     append(
         base,
@@ -509,7 +579,7 @@ def register(subparsers):
     s.add_argument("--timeout", type=int, default=3600)
     s.set_defaults(func=cmd_wait)
 
-    s = sub.add_parser("send", help="message an orchestrator stream; wakes reported/done back to running")
+    s = sub.add_parser("send", help="message a stream (<name> <text>) or parent manager (.. <text>)")
     s.add_argument("name")
     s.add_argument("text")
     s.add_argument("--queue", action="store_true", help="deliver after the current turn instead of steering")

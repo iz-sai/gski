@@ -640,7 +640,7 @@ export default Plugin.define({
 
     function summary(t: any) {
       if (t.status === "running") {
-        if (t.ping) return "ping: " + t.ping
+        if (t.msg) return "msg: " + t.msg
         if (t.live?.state === "idle") return "finished, waiting for orchestrator"
         const a = t.live?.activity?.[0]
         return a ? (a.status === "error" ? "✗ " : a.status === "running" ? "▸ " : "✓ ") + a.text : t.task
@@ -714,7 +714,7 @@ export default Plugin.define({
         return [
           ["Report", x.worker ? `${x.worker}: ${x.note || ""}` : x.note],
           ["Artifact", x.artifact],
-          ["Ping", x.ping],
+          ["Message", x.msg],
           [
             "Activity",
             x.live?.activity

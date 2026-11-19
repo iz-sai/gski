@@ -31,7 +31,6 @@ State lives in the project, not in your context:
   run.json       agent, model, variant, concurrency, max_attempts, permission
   ledger.jsonl   append-only task state (only ocq writes it; never edit by hand)
   results/<id>.json   worker report: {"status", "artifact", "note"}
-  results/<id>.ping   one-line ping on request; wait-any consumes it
 ```
 
 ## Commands
@@ -44,18 +43,19 @@ gski ocq ls                                # runs in this project
 gski ocq ledger RUN [--status S...] [--all]  # counts + actionable rows
 gski ocq spawn RUN                         # fill free slots with ready pending tasks
 gski ocq spawn RUN ID... [--agent worker|builder] [--allow 'shell:ssh host *']... [--model M]
-gski ocq wait-any RUN [--timeout 600]      # block until workers finish or ping
+gski ocq wait RUN [--timeout 600]          # block until a worker finishes
 gski ocq result RUN ID                     # details + worker's last reply
 gski ocq done RUN ID... [--note]
 gski ocq retry RUN ID... [--feedback "what to fix"]
 gski ocq fail RUN ID... [--note]
 gski ocq abort RUN [ID...]                 # running -> pending, kills its background jobs
-gski ocq send RUN ID "text" [--queue]      # message a running/reported worker; reported -> running
+gski ocq send RUN ID "text" [--queue]      # message a running/reported/done worker; reported/done -> running
+gski ocq send .. "text"                    # from W: message orchestrator while keeping bg jobs running
 ```
 
 Task ids are zero-padded (`0001`); `1` also works.
 Statuses: `pending` -> `running` -> `reported` -> `done` | `failed`, or back to
-`pending` by `retry`/`abort`, or `reported` -> `running` by `send`.
+`pending` by `retry`/`abort`, or `reported`/`done` -> `running` by `send`.
 `init --agent` sets the run default; `spawn --agent` overrides that dispatch only.
 Repeat the override on retries. ocq sessions cannot delegate to subagents.
 
@@ -94,19 +94,20 @@ If the user wants a trial, run 1-3 tasks first and show results before the rest.
 
 ```
 spawn RUN            -> fills slots up to concurrency
-wait-any RUN         -> reports finished workers
+wait RUN             -> reports finished workers
 read each report     -> done / retry --feedback / fail
 repeat
 ```
 
 Waiting:
-- Run `wait-any` as a background shell command (`background: true`) with a
+- Run `wait` as a background shell command (`background: true`) with a
   long `--timeout`, e.g. `--timeout 3600`. You are notified when it returns;
   do not poll its output or check status in between.
-- Always close a turn that starts background `wait-any` with a short one-liner
+- Always close a turn that starts background `wait` with a short one-liner
   (e.g. `waiting` or `0004 done, waiting`) — never an empty response.
-- While it runs, the session stays free for the user. If they ask for status,
-  `ledger RUN` is enough; the background wait keeps going.
+- While it runs, the session stays free for upstream. If asked for status,
+  check `ledger RUN` (and reply via `gski ocm send .. "..."` when under `ocm`);
+  the background `wait` keeps going.
 - On `timeout: N running`, start it again in the background and reply `waiting`.
 
 Reports:
@@ -130,19 +131,15 @@ Deciding:
 - A worker running far longer than its peers: `result` to look, then
   `abort` + retry, or leave it.
 - Workers may run background shell jobs; a worker idle while its job runs is
-  still `running`, not finished. `wait-any` reports it only after the job ends
+  still `running`, not finished. `wait` reports it only after the job ends
   and the worker's last turn is done.
-- Small correction that needs the worker's context: `send RUN ID "..."`.
-  It steers a running worker (`--queue`: after its current turn) or resumes a
-  reported one in the same session. Use `retry --feedback` for a fresh attempt.
-
-Pings (reactive only):
-- A worker pings only when you ask: in the brief, the task text, or a `send`.
-  It never pings on its own. Ask for a status now, or set a condition:
-  `send RUN 0003 "ping when the migration step passes, then continue"`.
-- The worker writes one line to `results/<id>.ping` and keeps working.
-  `wait-any` returns with `NNNN ping | <text>`; the task stays `running`.
-  React if needed, then restart `wait-any` in the background.
+- Question or correction that needs the worker's context: `send RUN ID "..."`.
+  It steers or asks a running worker (`--queue`: after its current turn) or
+  resumes a `reported`/`done` one in the same session (`-> running`). Use
+  `retry --feedback` for a fresh attempt/session. If background `wait` is
+  already running, do not start a second `wait` after `send`.
+- A running worker messages back via `gski ocq send .. "..."`, delivered to your
+  session as `[ocq/<run>/<id>] ...` without stopping `wait`.
 
 Context hygiene:
 - Keep turns short. Don't restate the ledger; `ledger RUN` shows it.
@@ -160,7 +157,7 @@ if any. Do not launch an investigation or repair project from that feedback.
 
 A new orchestrator session continues a run from files alone:
 `gski ocq ls`, then `gski ocq ledger RUN`, then read `brief.md`. Running
-workers keep going while no orchestrator is attached; `wait-any` picks them up.
+workers keep going while no orchestrator is attached; `wait` picks them up.
 
 ## Errors
 

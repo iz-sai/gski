@@ -32,6 +32,7 @@ gski ocm ls                              # streams, status, costs, child ocq run
 gski ocm show <name> [--chars 4000]      # stream details + O's last turn reply
 gski ocm wait [--timeout 3600]           # SSE sleep (zero CPU) until an O stops
 gski ocm send <name> "text" [--queue] [--allow RULE]...
+gski ocm send .. "text"                  # from O: message M while keeping bg jobs running
 gski ocm done <name> [--note "..."]
 gski ocm fail <name> [--note "..."]
 gski ocm abort [<name>]                  # kills O's bg shells + interrupts -> reported
@@ -70,14 +71,22 @@ Briefing `O`:
   from earlier stages, scope boundaries, and approved permissions.
 - State goals and constraints, not code-level step-by-step instructions.
 
-Waiting:
+Waiting and live messages:
 - Run `gski ocm wait --timeout 3600` as a background shell command
   (`background: true`). It subscribes to SSE events and uses zero CPU while `O`
-  and its `ocq` workers run. Do not poll between notifications.
+  and its background jobs run, returning only when an `O` stops with no
+  background jobs running (`reported`). Do not poll between notifications.
 - Close any turn that starts background `wait` with a short one-liner
   (e.g. `01-core started, waiting` or `01-core plan approved, waiting`) — never
   an empty response.
 - On `timeout: N running`, restart background `wait` and reply `waiting`.
+- A running `O` can message you mid-run via `gski ocm send .. "..."`, delivered
+  to your session as `[ocm/<name>] ...` without stopping `ocm wait`.
+- To ask or steer a running `O` while background `ocm wait` is already active,
+  run `gski ocm send <name> "..."` and close the turn briefly — do not start a
+  second `ocm wait`; `O`'s `[ocm/<name>]` reply wakes your session directly. Start
+  `ocm wait` after `send` only when no `ocm wait` is currently running (e.g.
+  resuming a `reported`/`done` stream).
 
 Handling `O` reports (`reported`):
 - **Phase 1 plan from `O`**: check via `show <name>` that the plan matches the

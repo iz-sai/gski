@@ -257,10 +257,10 @@ function actBox(t) {
 
 function taskLine(t) {
   if (t.status === "running") {
-    const ping = t.ping
-      ? `<div class="ping"><b>ping</b>${esc(t.ping)}</div>`
+    const msg = t.msg
+      ? `<div class="msg"><b>msg</b>${esc(t.msg)}</div>`
       : "";
-    return `<div class="sum">${esc(t.task)}</div>${ping}${actBox(t)}`;
+    return `<div class="sum">${esc(t.task)}</div>${msg}${actBox(t)}`;
   }
   const ws =
     t.status === "reported" && t.worker
@@ -399,7 +399,7 @@ function detail(id) {
   return `<div class="detail">
     ${row("Report", d.worker ? `**${d.worker}**: ${d.note || ""}` : d.note, "md")}
     ${row("Artifact", d.artifact, "mono")}
-    ${row("Ping", d.ping, "md")}
+    ${row("Message", d.msg, "md")}
     ${row("Task", d.task, "md")}
     ${row("Feedback", d.feedback, "md")}
     ${row("Denied", (d.denied || []).join("\n"), "mono")}

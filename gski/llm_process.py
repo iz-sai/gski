@@ -104,8 +104,8 @@ def register(subparsers):
         "--model",
         "-m",
         choices=list(MODELS.keys()),
-        default="3-8",
-        help="model to use (default: 3-8)",
+        default="hydrogen",
+        help="model to use (default: hydrogen)",
     )
     p.add_argument(
         "--system",

@@ -7,7 +7,7 @@ description: Search the web using Google Search via Gemini grounding — current
 
 `gski websearch` sends your text to Gemini with Google Search enabled. Gemini rewrites it into its own search queries, reads the results, and answers with sources. The text you send is both the question and the seed for those searches: whatever names and terms you put in it end up in the searches.
 
-Vertex AI Search redirect URLs are resolved to the actual source URLs. Default model is `gemini-3.8-flash`.
+Vertex AI Search redirect URLs are resolved to the actual source URLs. Default model is `gemini-4-hydrogen`.
 
 ## Usage
 

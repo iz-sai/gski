@@ -108,7 +108,7 @@ def run_detail(root, name):
             "worker": t.get("worker"),
             "artifact": t.get("artifact"),
             "note": cut(t.get("note"), 300),
-            "ping": t.get("ping"),
+            "msg": t.get("msg"),
             "task": cut(t.get("task"), 300),
             "started": t.get("started"),
             "finished": t.get("finished"),
@@ -154,7 +154,7 @@ def task_detail(root, name, tid):
     reply = ""
     if t.get("session"):
         reply = last_text(messages(t["session"], timeout=10))[:4000]
-    keys = ("id", "status", "attempts", "task", "worker", "artifact", "note", "ping", "feedback", "denied", "session", "cost", "tokens")
+    keys = ("id", "status", "attempts", "task", "worker", "artifact", "note", "msg", "feedback", "denied", "session", "cost", "tokens")
     d = {k: t.get(k) for k in keys}
     if t.get("session") and t["status"] == "running":
         s = session_info(t["session"])

@@ -16,6 +16,7 @@ BASE_RULES = [
     {"action": "subagent", "resource": "*", "effect": "deny"},
     {"action": "question", "resource": "*", "effect": "deny"},
     {"action": "shell", "resource": "gski ocq*", "effect": "deny"},
+    {"action": "shell", "resource": "gski ocq send *", "effect": "allow"},
 ]
 
 DEFAULT_CFG = {
@@ -162,9 +163,16 @@ def fmt_model(ref):
     return f"{ref['providerID']}/{ref['id']}" + (f"#{ref['variant']}" if ref.get("variant") else "")
 
 
-def create_session(title, agent, model, variant, rules, directory):
+def create_session(title, agent, model, variant, rules, directory, metadata=None):
     ref, src = resolve_model(agent, model, variant)
-    body = {"title": title, "agent": agent, "permissions": rules, "location": {"directory": directory}, "model": ref}
+    body = {
+        "title": title,
+        "agent": agent,
+        "permissions": rules,
+        "location": {"directory": directory},
+        "model": ref,
+        **({"metadata": metadata} if metadata else {}),
+    }
     s = api("POST", "/api/session", body)
     got = s.get("model") or {}
     if (got.get("providerID"), got.get("id")) != (ref["providerID"], ref["id"]):
@@ -175,6 +183,15 @@ def create_session(title, agent, model, variant, rules, directory):
 def send_prompt(sid, text, delivery=None):
     body = {"text": text, **({"delivery": delivery} if delivery else {})}
     return api("POST", f"/api/session/{sid}/prompt", body)
+
+
+def send_synthetic(sid, text, description=None, delivery="queue"):
+    body = {
+        "text": text,
+        **({"description": description} if description else {}),
+        **({"delivery": delivery} if delivery else {}),
+    }
+    return api("POST", f"/api/session/{sid}/synthetic", body)
 
 
 def _loc(directory):

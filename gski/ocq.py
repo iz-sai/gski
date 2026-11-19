@@ -11,6 +11,7 @@ from gski.ocq_lib.api import (
     DEFAULT_CFG,
     DEFAULT_PORT,
     active,
+    api,
     assistants,
     create_session,
     die,
@@ -21,6 +22,7 @@ from gski.ocq_lib.api import (
     messages,
     pending_input,
     send_prompt,
+    send_synthetic,
     session_info,
     shells,
     sweep,
@@ -31,6 +33,7 @@ from gski.ocq_lib.ledger import (
     build_prompt,
     cut,
     fold,
+    known_projects,
     load_cfg,
     parse_allow,
     project_root,
@@ -42,6 +45,8 @@ from gski.ocq_lib.ledger import (
     sum_tokens,
     summary,
 )
+
+PARENT_TARGETS = ("..", "orchestrator", "parent")
 
 
 def report(rd, cfg, t):
@@ -199,10 +204,10 @@ def cmd_spawn(args):
     for t in targets:
         t["attempts"] = t.get("attempts", 0) + 1
         (rd / "results" / f"{t['id']}.json").unlink(missing_ok=True)
-        (rd / "results" / f"{t['id']}.ping").unlink(missing_ok=True)
-        s, used = create_session(f"ocq/{args.run}/{t['id']}", agent, model, variant, rules, cfg["dir"])
+        meta = {"ocq_root": str(cfg["dir"]), "run": args.run, "task": t["id"]}
+        s, used = create_session(f"ocq/{args.run}/{t['id']}", agent, model, variant, rules, cfg["dir"], meta)
         send_prompt(s["id"], build_prompt(args.run, t))
-        append(rd, id=t["id"], status="running", session=s["id"], attempts=t["attempts"], started=int(time.time()), allow=args.allow or None, ping=None)
+        append(rd, id=t["id"], status="running", session=s["id"], attempts=t["attempts"], started=int(time.time()), allow=args.allow or None, msg=None)
         print(f"{t['id']} running {s['id']} [{used}]")
 
 
@@ -235,15 +240,6 @@ def cmd_wait(args):
             return
         sweep(rd, cfg, {sid: t["id"] for sid, t in running.items()}, append)
         lines = []
-        for t in running.values():
-            p = rd / "results" / f"{t['id']}.ping"
-            try:
-                msg = cut(p.read_text(), 300)
-                p.unlink()
-            except FileNotFoundError:
-                continue
-            append(rd, id=t["id"], ping=msg or "(empty)")
-            lines.append(f"{t['id']} ping | {msg or '(empty)'}")
         live = active() or {}
         for sid, t in running.items():
             if sid not in live:
@@ -277,7 +273,7 @@ def cmd_result(args):
     t = tasks[resolve(tasks, [args.id])[0]]
     print(f"id: {t['id']}  status: {t['status']}  attempts: {t.get('attempts', 0)}  session: {t.get('session', '-')}")
     print(f"task: {t.get('task')}")
-    for k in ("worker", "artifact", "note", "ping", "feedback", "cost", "tokens"):
+    for k in ("worker", "artifact", "note", "msg", "feedback", "cost", "tokens"):
         if t.get(k) not in (None, ""):
             print(f"{k}: {t[k]}")
     for d in t.get("denied") or []:
@@ -311,29 +307,87 @@ def mark(args, status):
         print(f"{tid} {status}")
 
 
+def caller_task(sid):
+    if not sid:
+        return None
+    meta = session_info(sid).get("metadata") or {}
+    if meta.get("ocq_root") and meta.get("run"):
+        rd = Path(meta["ocq_root"]) / ".ocq" / "runs" / meta["run"]
+        if (rd / "run.json").exists():
+            for t in fold(rd).values():
+                if t.get("session") == sid:
+                    return rd, meta["run"], t
+    roots = [project_root(), *(Path(p) for p in known_projects())]
+    seen = set()
+    for r in roots:
+        try:
+            r = r.resolve()
+        except OSError:
+            continue
+        if r in seen:
+            continue
+        seen.add(r)
+        runs = r / ".ocq" / "runs"
+        if not runs.is_dir():
+            continue
+        for rd in runs.iterdir():
+            if not (rd / "run.json").exists():
+                continue
+            for t in fold(rd).values():
+                if t.get("session") == sid:
+                    return rd, rd.name, t
+    return None
+
+
 def cmd_send(args):
-    rd = run_dir(args.run)
+    pos = args.target
+    caller = os.environ.get("OPENCODE_SESSION_ID")
+    mine = caller_task(caller) if caller else None
+    if mine:
+        rd, run_name, t = mine
+        if len(pos) == 2:
+            dst, text = pos
+        elif len(pos) == 3 and pos[0] == run_name:
+            _, dst, text = pos
+        else:
+            die("usage from worker: gski ocq send .. <text>")
+        if dst not in PARENT_TARGETS:
+            die("worker can only send to ..")
+        orch = load_cfg(rd).get("orchestrator")
+        if not orch:
+            die("no orchestrator session recorded in run.json")
+        send_synthetic(orch, f"[ocq/{run_name}/{t['id']}]\n{text}", f"ocq/{run_name}/{t['id']}")
+        append(rd, id=t["id"], msg=cut(text, 300))
+        print(f"{t['id']} -> .. sent")
+        return
+    if len(pos) == 2 and pos[0] in PARENT_TARGETS:
+        die("not in a worker session")
+    if len(pos) != 3 or pos[1] in PARENT_TARGETS:
+        die("usage: gski ocq send <run> <id> <text>")
+    run_name, tid_arg, text = pos
+    rd = run_dir(run_name)
+    cfg = load_cfg(rd)
     tasks = fold(rd)
-    t = tasks[resolve(tasks, [args.id])[0]]
-    if t["status"] not in ("running", "reported") or not t.get("session"):
-        die(f"{t['id']} is {t['status']}: send works on running or reported tasks (use retry --feedback)")
-    rel = f".ocq/runs/{args.run}/results/{t['id']}.json"
-    ping = f".ocq/runs/{args.run}/results/{t['id']}.ping"
-    text = (
-        f"Message from the ocq orchestrator:\n{args.text}\n\n"
-        f"If this message asks for a ping (an answer now, or when a condition is met), write one line to {ping} "
-        "at that point and keep working. Do not ping otherwise.\n"
-        f"If this changes your result, rewrite {rel}. Then reply with one line."
+    t = tasks[resolve(tasks, [tid_arg])[0]]
+    if t["status"] not in ("running", "reported", "done") or not t.get("session"):
+        die(f"{t['id']} is {t['status']}: send works on running, reported, or done tasks (use retry --feedback)")
+    rules = BASE_RULES + rules_from(cfg.get("permission")) + [parse_allow(a) for a in t.get("allow") or []]
+    api("PATCH", f"/api/session/{t['session']}", {"permissions": rules})
+    rel = f".ocq/runs/{run_name}/results/{t['id']}.json"
+    prompt = (
+        f'[ocq orchestrator — reply via `gski ocq send .. "..."` while keeping work/bg jobs running; '
+        f"if your final result changes, rewrite {rel}]\n{text}"
     )
     delivery = "queue" if args.queue else "steer"
-    send_prompt(t["session"], text, delivery)
-    ev = {"id": t["id"], "sent": time.time(), "message": cut(args.text, 300)}
-    if t["status"] == "reported":
+    send_prompt(t["session"], prompt, delivery)
+    ev = {"id": t["id"], "sent": time.time(), "message": cut(text, 300)}
+    reopen = t["status"] in ("reported", "done")
+    if reopen:
         b = t.get("billed") or {}
         neg = {k: -v for k, v in (b.get("tokens") or {}).items()}
         ev.update(status="running", cost=-(b.get("cost") or 0), tokens=neg or None, billed=None)
     append(rd, **ev)
-    print(f"{t['id']} sent ({delivery}){' -> running' if t['status'] == 'reported' else ''}")
+    print(f"{t['id']} sent ({delivery}){' -> running' if reopen else ''}")
 
 
 def cmd_abort(args):
@@ -400,7 +454,7 @@ def register(subparsers):
     s.add_argument("--variant")
     s.set_defaults(func=cmd_spawn)
 
-    s = sub.add_parser("wait-any", help="block until a worker finishes; auto-rejects permission asks")
+    s = sub.add_parser("wait", aliases=["wait-any"], help="block until a worker finishes; auto-rejects permission asks")
     s.add_argument("run")
     s.add_argument("--timeout", type=int, default=600)
     s.add_argument("--interval", type=float, default=2)
@@ -430,10 +484,8 @@ def register(subparsers):
     s.add_argument("ids", nargs="*")
     s.set_defaults(func=cmd_abort)
 
-    s = sub.add_parser("send", help="message a running or reported worker; reported goes back to running")
-    s.add_argument("run")
-    s.add_argument("id")
-    s.add_argument("text")
+    s = sub.add_parser("send", help="message a worker (<run> <id> <text>) or parent orchestrator (.. <text>)")
+    s.add_argument("target", nargs="+", metavar="ARG", help="<run> <id> <text>, or .. <text> from a worker")
     s.add_argument("--queue", action="store_true", help="deliver after the current turn instead of steering it")
     s.set_defaults(func=cmd_send)
 

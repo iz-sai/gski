@@ -31,6 +31,8 @@ def touch_orchestrator(rd):
     cfg_path = rd / "run.json"
     if not cfg_path.exists():
         return
+    if any(t.get("session") == sid for t in fold(rd).values()):
+        return
     try:
         cfg = json.loads(cfg_path.read_text())
         if cfg.get("orchestrator") != sid:
@@ -155,16 +157,13 @@ def build_prompt(run, t):
         parts += ["", "Feedback on the previous attempt:", t["feedback"]]
     parts += [
         "",
-        "No human is available. Stay within the task scope; if blocked or a decision exceeds it, "
-        "report failed with the reason and any partial work instead of asking questions.",
+        "No human is available. Stay within the task scope; if blocked with no background jobs to keep alive, "
+        "report failed with the reason and any partial work.",
         "Do not test, compare, or validate unless the brief or task explicitly relays a user request "
         "for it. Observe execution errors; done means execution completed, not independently verified.",
         "In note, mention concrete instruction problems encountered while executing; suggest a fix "
         "only if obvious. Do not search for problems or review the instructions separately.",
-        "",
-        f"Ping: only when the orchestrator explicitly asks for it (in the brief, the task, or a message), "
-        f"write one line to {rel}/results/{t['id']}.ping at the point it asks for, then keep working. "
-        "Never ping on your own initiative.",
+        f'To message or reply to the orchestrator while keeping work/background jobs running: gski ocq send .. "..."',
         "",
         f"When finished, write {rel}/results/{t['id']}.json:",
         '{"status": "done" | "failed", "artifact": "<path or short value>", "note": "<one line>"}',
@@ -186,8 +185,8 @@ def summary(tasks):
 def row(t):
     if t["status"] in ("reported", "done", "failed") and t.get("worker"):
         info = f"{t['worker']} {t.get('artifact') or '-'} | {t.get('note') or ''}"
-    elif t["status"] == "running" and t.get("ping"):
-        info = f"ping: {t['ping']}"
+    elif t["status"] == "running" and t.get("msg"):
+        info = f"msg: {t['msg']}"
     else:
         info = t.get("task", "")
     extra = f" [denied {len(t['denied'])}]" if t.get("denied") else ""
