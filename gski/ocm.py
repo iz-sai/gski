@@ -1,32 +1,30 @@
-import itertools
 import json
 import os
 import re
 import time
 import urllib.error
-import urllib.parse
-import urllib.request
 from pathlib import Path
 
 from gski.ocq_lib.api import (
-    _headers,
+    EVENT_TYPES,
+    TMP_RULES,
     active,
     api,
     assistants,
-    connect,
     create_session,
     die,
     err_text,
     interrupt,
     kill_shell,
-    last_text,
     messages,
+    open_events,
     pending_input,
     send_prompt,
     send_synthetic,
     session_info,
     shells,
     sweep,
+    turn_text,
 )
 from gski.ocq_lib.ledger import cut, fold as fold_ocq, known_projects, parse_allow, remember, sum_tokens, summary as ocq_summary
 
@@ -36,15 +34,8 @@ OCM_RULES = [
     {"action": "question", "resource": "*", "effect": "deny"},
     {"action": "shell", "resource": "gski ocm*", "effect": "deny"},
     {"action": "shell", "resource": "gski ocm send *", "effect": "allow"},
-    {"action": "external_directory", "resource": "/tmp/opencode/**", "effect": "allow"},
+    *TMP_RULES,
 ]
-EVENT_TYPES = (
-    "session.execution.succeeded",
-    "session.execution.failed",
-    "session.execution.interrupted",
-    "permission.asked",
-    "shell.exited",
-)
 
 
 def ocm_root():
@@ -180,23 +171,13 @@ def rules_for(allow):
 def build_prompt(name, text):
     return (
         f"ocm stream: {name}\n"
-        "Upstream is a Manager session. Follow your normal orchestrator workflow (`gski ocq` for substantial/repetitive work, "
-        "direct execution only for small in-scope steps). Do not use the question tool.\n"
-        "Upstream receives your turn output only when you stop with no background jobs running; "
-        'to reply or message upstream while keeping background jobs running, run: gski ocm send .. "..."\n\n'
+        "Upstream is a Manager session. Execution is pre-approved within the goal, constraints, and permissions below: "
+        "plan and run Round 1 directly without pausing for routine plan approval, then stop and report concrete results "
+        "(stop early only on a genuine scope contradiction or missing permission).\n"
+        "The question tool is disabled; upstream receives your output when you stop with no background jobs running, "
+        'or mid-run via: gski ocm send .. "..."\n\n'
         f"Task:\n{text}"
     )
-
-
-def turn_text(msgs):
-    turn = list(itertools.takewhile(lambda m: m.get("type") not in ("user", "synthetic"), msgs))
-    parts = []
-    for m in reversed(turn):
-        if m.get("type") == "assistant":
-            txt = "\n".join(c.get("text", "") for c in m.get("content", []) if c.get("type") == "text").strip()
-            if txt:
-                parts.append(txt)
-    return "\n\n".join(parts) if parts else last_text(msgs)
 
 
 def ocq_runs(s):
@@ -297,13 +278,6 @@ def check_all(base):
     return ("done", lines) if lines else ("wait", [])
 
 
-def open_events(timeout):
-    url, pw = connect()
-    q = "&".join(f"types={urllib.parse.quote(t)}" for t in EVENT_TYPES)
-    req = urllib.request.Request(f"{url}/api/event?{q}", headers={**_headers(pw), "accept": "text/event-stream"})
-    return urllib.request.urlopen(req, timeout=timeout)
-
-
 def cmd_start(args):
     if args.name in PARENT_TARGETS or not NAME_RE.match(args.name):
         die(f"invalid stream name: {args.name}")
@@ -318,7 +292,7 @@ def cmd_start(args):
     mgr = touch_manager(base, streams)
     allow = list(args.allow or [])
     meta = {"ocm_root": str(base.parent), "stream": args.name}
-    s, used = create_session(f"ocm/{args.name}", "orchestrator", args.model, args.variant, rules_for(allow), d, meta)
+    s, used = create_session(f"ocm/{args.name}", "orchestrator", args.model, rules_for(allow), d, meta)
     now = time.time()
     send_prompt(s["id"], build_prompt(args.name, args.text))
     append(
@@ -562,7 +536,6 @@ def register(subparsers):
     s.add_argument("text", help="high-level task for the orchestrator")
     s.add_argument("--dir", help="working directory for the orchestrator (default: cwd)")
     s.add_argument("--model", help="provider/model")
-    s.add_argument("--variant")
     s.add_argument("--allow", action="append", help="extra allow rule, e.g. 'shell:git *' or 'shell:ssh host *'")
     s.set_defaults(func=cmd_start)
 

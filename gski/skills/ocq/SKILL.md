@@ -1,166 +1,68 @@
 ---
 name: gski ocq
-description: Orchestrate opencode worker sessions - split work into tasks, dispatch, handle reports, track state in a ledger
+description: Orchestrate opencode worker sessions - run parallel waves across model tiers, handle results, track state in a ledger
 ---
 
 # ocq
 
-`gski ocq` runs tasks in separate opencode worker sessions on the shared
-opencode background service (auto-started; `OCQ_URL`/`OCQ_PASSWORD` target
-another server, `gski ocq serve` runs a separate one). You are the orchestrator:
-you plan, dispatch, read reports, and decide. Never implement features or do
-real tasks yourself — dispatch all work. Exception: trivial ~5-line hotfixes
-(typos, config tweaks, minor glue) where spawning a worker causes more friction
-than editing directly; no run, brief, or extra approval cycle needed for those.
-Do not edit files a running worker is changing.
+`gski ocq` dispatches tasks to separate opencode sessions on the shared background service so Orchestrator (O) focuses on thinking, planning, and coordination while workers execute in parallel.
 
-When delegating, default to `worker`: supply the procedure, inputs, and outputs. It executes
-and reports blockers instead of investigating. Select the existing `builder`
-only for user-authorized investigation or implementation needing independent
-choices. A delegated code edit with a known procedure still belongs to `worker`.
+How O runs work with `ocq`:
+- O plans the approach, gets go-ahead before the first run (unless already authorized in the prompt), and executes in bounded rounds: launch a wave of parallel tasks -> `wait` until the wave settles -> inspect structured results -> launch the next dependent wave if part of the plan -> stop and report results. Follow-up fixes go into an explicit next round, never ad-hoc mid-run spawning.
+- Tasks use model/agent tiers matched to the job (all run at `high` automatically):
+  - `worker` (`google/gemini-4-hydrogen`, default): implementation and tasks with a known procedure; executes strictly and reports blockers instead of investigating.
+  - `builder` + `google/gemini-4-neon`: check, code review, audit, verification.
+  - `builder` + `google/gemini-4-carbon`: architecture, design, hard trade-offs, open-ended investigation.
+- Parallelism is the default: combine independent tasks in one wave — edits to disjoint files, `carbon` design on one area, `hydrogen` implementation on another, and `neon` review on finished code run together. 
+    Separate into sequential waves (or merge into one task) only on real conflicts: editing the same files, reading files another task is modifying, output dependencies, shared mutable state (ports, DB, build artifacts), or heavy compute/benchmarks that contend for resources or skew timings.
+- Meaningful tests, benchmarks, or a `neon` review/audit task are fine when requested or warranted; do not run paranoid syntax checks or boilerplate validation.
 
-Neither O nor either agent tests, compares, or validates artifacts unless the
-user explicitly requests it. Do not invent checks in the plan or brief. Normal
-execution errors must be reported; `done` means execution completed, not verified.
-
-State lives in the project, not in your context:
+## State
 
 ```
 .ocq/runs/<run>/
-  brief.md       goal, conventions, done criteria - every worker reads it
-  run.json       agent, model, variant, concurrency, max_attempts, permission
-  ledger.jsonl   append-only task state (only ocq writes it; never edit by hand)
-  results/<id>.json   worker report: {"status", "artifact", "note"}
+  brief.md           shared goal, context, conventions (optional; every worker reads it when present)
+  run.json           run metadata and permissions (managed by ocq)
+  ledger.jsonl       append-only task state: running | done | failed (managed by ocq)
+  results/<id>.json  worker output: {"status": "done"|"failed", "artifact": ..., "note": ...}
 ```
 
 ## Commands
 
 ```bash
-gski ocq init RUN [--agent worker|builder] [--model provider/model] [--variant V] [--concurrency N]
-gski ocq add RUN "task text" ["task text"]... [--deps 0001,0002]
-gski ocq add RUN --file tasks.jsonl        # {"task": "...", "id"?: "...", "deps"?: [...]} or plain lines
-gski ocq ls                                # runs in this project
-gski ocq ledger RUN [--status S...] [--all]  # counts + actionable rows
-gski ocq spawn RUN                         # fill free slots with ready pending tasks
-gski ocq spawn RUN ID... [--agent worker|builder] [--allow 'shell:ssh host *']... [--model M]
-gski ocq wait RUN [--timeout 600]          # block until a worker finishes
-gski ocq result RUN ID                     # details + worker's last reply
-gski ocq done RUN ID... [--note]
-gski ocq retry RUN ID... [--feedback "what to fix"]
-gski ocq fail RUN ID... [--note]
-gski ocq abort RUN [ID...]                 # running -> pending, kills its background jobs
-gski ocq send RUN ID "text" [--queue]      # message a running/reported/done worker; reported/done -> running
-gski ocq send .. "text"                    # from W: message orchestrator while keeping bg jobs running
+gski ocq spawn <run> "task"... [--file tasks.jsonl|-] [--agent worker|builder] [--model M] [--allow RULE]...
+gski ocq wait <run> [--any] [--timeout 3600]
+gski ocq ls [<run>] [--status S...]
+gski ocq show <run> <id> [--chars 4000]
+gski ocq send <run> <id> "text" [--queue] [--allow RULE]...
+gski ocq send .. "text"
+gski ocq abort <run> [<id>...]
 ```
 
-Task ids are zero-padded (`0001`); `1` also works.
-Statuses: `pending` -> `running` -> `reported` -> `done` | `failed`, or back to
-`pending` by `retry`/`abort`, or `reported`/`done` -> `running` by `send`.
-`init --agent` sets the run default; `spawn --agent` overrides that dispatch only.
-Repeat the override on retries. ocq sessions cannot delegate to subagents.
+- `spawn` creates `<run>` automatically if needed, assigns sequential IDs (`0001`, `0002`, ...), and starts all given tasks immediately in parallel.
+- For mixed-tier waves in one call, pass `--file tasks.jsonl` (or `-` via stdin), one JSON object per line:
+  `{"task": "...", "id"?: "0001", "agent"?: "worker"|"builder", "model"?: "google/gemini-4-neon", "allow"?: ["shell:ssh host *"]}`
+- `/tmp/opencode/**` is allowed by default. Pass `--allow` only for extra user-approved permissions (`shell:git *`, `shell:ssh host *`, `external_directory:/path/**`). Workers cannot spawn subagents.
 
-## Phase 1: understand, propose, wait
+## Workflow and mechanics
 
-Before starting a worker run:
-
-1. Read the supplied docs and inputs. Use the known procedure; do not rediscover it.
-2. Send a plan to the user:
-   - your understanding of the goal, in a few lines
-   - how the work splits into tasks: count, and 2-3 concrete examples
-   - the brief you will give workers (summary)
-   - what execution must complete to count as "done"
-   - concurrency, agent, model, extra permissions if any
-3. Stop and wait for approval. Nothing is spawned before the user says go.
-
-If the user wants a trial, run 1-3 tasks first and show results before the rest.
-
-## Phase 2: set up
-
-1. `gski ocq init RUN ...`
-2. Write `brief.md`: goal, inputs, outputs, conventions, and completion criteria.
-   For `worker`, give the procedure; for `builder`, give scope and constraints.
-   Include checks only if the user requested them. Blockers go back to O with
-   the reason and any partial work. Workers have no orchestrator conversation context.
-3. Set extra permissions in `run.json` `permission`, same shape as opencode
-   config: `{"shell": {"ssh myhost *": "allow"}, "webfetch": "deny"}`.
-   Only what the user approved. Standing approval: always add
-   `"external_directory": {"/tmp/opencode/**": "allow"}` (workers read scratch
-   images there; without it Read is auto-denied).
-4. Add tasks. Each task text is self-contained: what to do, which input, where
-   the output goes. For many tasks write a jsonl file and `add --file`.
-   Stack back-to-back steps into one task to save worker startup overhead.
-
-## Phase 3: control loop
-
-```
-spawn RUN            -> fills slots up to concurrency
-wait RUN             -> reports finished workers
-read each report     -> done / retry --feedback / fail
-repeat
-```
-
-Waiting:
-- Run `wait` as a background shell command (`background: true`) with a
-  long `--timeout`, e.g. `--timeout 3600`. You are notified when it returns;
-  do not poll its output or check status in between.
-- Always close a turn that starts background `wait` with a short one-liner
-  (e.g. `waiting` or `0004 done, waiting`) — never an empty response.
-- While it runs, the session stays free for upstream. If asked for status,
-  check `ledger RUN` (and reply via `gski ocm send .. "..."` when under `ocm`);
-  the background `wait` keeps going.
-- On `timeout: N running`, start it again in the background and reply `waiting`.
-
-Reports:
-- Accept successful execution reports. No artifact inspection, sampling, or
-  verification loops unless the user requested them; stay within that request.
-- Workers may note concrete instruction problems encountered during execution.
-  Do not assign a separate instruction review or automatically rerun completed work.
-- Mark several at once: `gski ocq done RUN 0004 0005 0006`.
-
-Deciding:
-- Bad result, fixable: `retry --feedback` with a concrete correction. The
-  next attempt sees it.
-- Worker `failed` with a real reason, or max attempts reached: `fail --note`.
-- A procedure needs investigation: clarify it or use `builder` only within the
-  approved scope. A worker never promotes itself to builder.
-- The same failure pattern across tasks: stop spawning, fix the brief or
-  task texts, tell the user if it changes the plan.
-- `NNNN denied <tool>: <what>` lines: ocq auto-rejected a permission ask. If
-  the task truly needs it, ask the user before allowing it (`spawn --allow`
-  or `run.json`). Never grant permissions on your own.
-- A worker running far longer than its peers: `result` to look, then
-  `abort` + retry, or leave it.
-- Workers may run background shell jobs; a worker idle while its job runs is
-  still `running`, not finished. `wait` reports it only after the job ends
-  and the worker's last turn is done.
-- Question or correction that needs the worker's context: `send RUN ID "..."`.
-  It steers or asks a running worker (`--queue`: after its current turn) or
-  resumes a `reported`/`done` one in the same session (`-> running`). Use
-  `retry --feedback` for a fresh attempt/session. If background `wait` is
-  already running, do not start a second `wait` after `send`.
-- A running worker messages back via `gski ocq send .. "..."`, delivered to your
-  session as `[ocq/<run>/<id>] ...` without stopping `wait`.
-
-Context hygiene:
-- Keep turns short. Don't restate the ledger; `ledger RUN` shows it.
-- Use `result RUN ID` only when a report line is not enough.
-- Never read worker transcripts in full.
-
-## Phase 4: finish
-
-When `ledger` shows nothing pending or running: a short summary for the
-user - counts, failures grouped by reason, where the artifacts are, cost.
-Include useful instruction feedback and an obvious correction for next time,
-if any. Do not launch an investigation or repair project from that feedback.
-
-## Resume
-
-A new orchestrator session continues a run from files alone:
-`gski ocq ls`, then `gski ocq ledger RUN`, then read `brief.md`. Running
-workers keep going while no orchestrator is attached; `wait` picks them up.
-
-## Errors
-
-- `server not reachable`: ask the user to run `opencode service start`. Do not start it yourself.
-- `brief missing`: write `brief.md` first.
-- `max attempts reached`: use `fail`, or ask the user.
+1. Plan: read relevant inputs/docs; unless go-ahead was already given, send a concise plan (goal, wave/task breakdown, tiers, needed `--allow` rules) and wait for approval before first `spawn`.
+2. Brief and tasks:
+   - Write `.ocq/runs/<run>/brief.md` when multiple tasks share context, architecture, or conventions (skip for a single self-contained task). Workers have no O conversation context.
+   - Give `worker` concrete procedure + inputs/outputs; give `builder` scope + constraints (state read-only explicitly for review/audit/design tasks). Stack back-to-back edits to the same file into one task.
+3. Dispatch and wait:
+   - Spawn the wave, then run `gski ocq wait <run> --timeout 3600` with `background: true`.
+   - By default `wait` uses SSE (zero CPU) and returns once all running tasks in `<run>` finish; pass `--any` only when you need to react to the first completion while slower tasks keep running.
+   - Always close a turn that starts background `wait` with a short one-liner (e.g. `wave 1 running, waiting`), never an empty response. On `timeout: N running`, restart background `wait` and reply `waiting`. Do not poll.
+   - While waiting, the session stays free: check `ocq ls <run>` if asked for status.
+4. Results and steering:
+   - Workers write `results/<id>.json` and settle directly to `done` or `failed` (no manual done/fail step).
+   - Read `ocq ls <run>` for artifacts and notes; call `ocq show <run> <id>` only when full reply/details are needed. Never read full worker transcripts.
+   - To steer a running worker or ask a finished (`done`/`failed`) worker for a fix/follow-up in the same session context, run `ocq send <run> <id> "..."` (`--queue` waits for current turn; `done`/`failed` reopen to `running`). For a clean context, `spawn` a new task. Do not start a second `wait` if one is already active.
+   - Workers can message O mid-run without stopping via `gski ocq send .. "..."`, delivered as `[ocq/<run>/<id>]`.
+5. Permissions and stuck workers:
+   - `NNNN denied <action>: <what>` means ocq auto-rejected an unapproved permission ask. Ask the user before granting `--allow`.
+   - Workers running background shells stay `running` until shells exit and the final turn completes. For stuck outliers, inspect with `show`, then `abort <run> <id>` (kills bg shells -> `failed`).
+6. Finish and resume:
+   - When the round completes, stop and report outcomes, artifact paths, failures, cost, and a next-round proposal if fixes are needed.
+   - A new O session resumes from files: `gski ocq ls [<run>]`, read `brief.md`, `gski ocq wait <run>`. If `server not reachable`, ask the user to run `opencode service start`.

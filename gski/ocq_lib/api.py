@@ -1,4 +1,5 @@
 import base64
+import itertools
 import json
 import os
 import subprocess
@@ -10,24 +11,44 @@ import urllib.request
 from pathlib import Path
 
 DEFAULT_PORT = 4096
-DEFAULT_DASH_PORT = 4097
+DEFAULT_VARIANT = "high"
+
+TMP_RULES = [
+    {"action": "external_directory", "resource": "/tmp/opencode/**", "effect": "allow"},
+    *(
+        [
+            {"action": "external_directory", "resource": "/private/tmp/opencode/**", "effect": "allow"},
+            {"action": "external_directory", "resource": "/var/folders/**/T/opencode/**", "effect": "allow"},
+            {"action": "external_directory", "resource": "/private/var/folders/**/T/opencode/**", "effect": "allow"},
+        ]
+        if sys.platform == "darwin"
+        else []
+    ),
+]
 
 BASE_RULES = [
     {"action": "subagent", "resource": "*", "effect": "deny"},
     {"action": "question", "resource": "*", "effect": "deny"},
     {"action": "shell", "resource": "gski ocq*", "effect": "deny"},
     {"action": "shell", "resource": "gski ocq send *", "effect": "allow"},
+    *TMP_RULES,
 ]
 
 DEFAULT_CFG = {
     "agent": "worker",
     "model": None,
-    "variant": None,
-    "concurrency": 1,
-    "max_attempts": 3,
+    "allow": [],
     "permission": {},
     "orchestrator": None,
 }
+
+EVENT_TYPES = (
+    "session.execution.succeeded",
+    "session.execution.failed",
+    "session.execution.interrupted",
+    "permission.asked",
+    "shell.exited",
+)
 
 DENY_MSG = "ocq: this specific call is not permitted. Do not retry it; continue without it or write status failed."
 
@@ -93,6 +114,13 @@ def connect():
     return url, pw
 
 
+def open_events(timeout):
+    url, pw = connect()
+    q = "&".join(f"types={urllib.parse.quote(t)}" for t in EVENT_TYPES)
+    req = urllib.request.Request(f"{url}/api/event?{q}", headers={**_headers(pw), "accept": "text/event-stream"})
+    return urllib.request.urlopen(req, timeout=timeout)
+
+
 def _call(method, path, body=None, timeout=60):
     url, pw = connect()
     data = json.dumps(body).encode() if body is not None else None
@@ -139,8 +167,8 @@ def _retry(fn, tries=20):
     return None
 
 
-def resolve_model(agent, model, variant):
-    # precedence: explicit model > agent's own model > server default
+def resolve_model(agent, model):
+    # precedence: explicit model > agent's own model > server default; variant defaults to high
     prov, mid, var = parse_model(model)
     src = "run"
     if not mid:
@@ -149,22 +177,22 @@ def resolve_model(agent, model, variant):
         if not info:
             die(f"unknown agent: {agent}")
         m = info.get("model") or {}
-        prov, mid, var = m.get("providerID"), m.get("id"), var or m.get("variant")
+        prov, mid, var = m.get("providerID"), m.get("id"), m.get("variant")
     if not mid:
         src = "default"
         d = _retry(lambda: fetch("/api/model/default")) or {}
         prov, mid = d.get("providerID"), d.get("modelID") or d.get("id")
     if not mid:
         die("cannot resolve a model: set --model or a default model")
-    return {"providerID": prov, "id": mid, **({"variant": variant or var} if (variant or var) else {})}, src
+    return {"providerID": prov, "id": mid, "variant": var or DEFAULT_VARIANT}, src
 
 
 def fmt_model(ref):
     return f"{ref['providerID']}/{ref['id']}" + (f"#{ref['variant']}" if ref.get("variant") else "")
 
 
-def create_session(title, agent, model, variant, rules, directory, metadata=None):
-    ref, src = resolve_model(agent, model, variant)
+def create_session(title, agent, model, rules, directory, metadata=None):
+    ref, src = resolve_model(agent, model)
     body = {
         "title": title,
         "agent": agent,
@@ -245,6 +273,17 @@ def last_text(msgs):
     return ""
 
 
+def turn_text(msgs):
+    turn = list(itertools.takewhile(lambda m: m.get("type") not in ("user", "synthetic"), msgs))
+    parts = []
+    for m in reversed(turn):
+        if m.get("type") == "assistant":
+            txt = "\n".join(c.get("text", "") for c in m.get("content", []) if c.get("type") == "text").strip()
+            if txt:
+                parts.append(txt)
+    return "\n\n".join(parts) if parts else last_text(msgs)
+
+
 def err_text(err):
     if not isinstance(err, dict):
         return str(err)
@@ -258,22 +297,3 @@ def sweep(rd, cfg, by_session, append_fn):
             what = f"{p.get('action')}: {' '.join(p.get('resources') or [])}"[:120]
             append_fn(rd, id=tid, denied=what)
             print(f"{tid} denied {what}")
-
-
-def activity(msgs, limit=10):
-    out = []
-    for m in assistants(msgs):
-        for c in reversed(m.get("content", [])):
-            if c.get("type") == "tool":
-                st = c.get("state") or {}
-                inp = st.get("input") or {}
-                what = inp.get("command") or inp.get("path") or inp.get("filePath") or inp.get("pattern") or inp.get("url") or inp.get("query") or ""
-                out.append({
-                    "text": f"{c.get('name')}: {what}"[:2000],
-                    "status": st.get("status") or "completed",
-                })
-                if len(out) >= limit:
-                    return out
-            elif not out and c.get("type") == "text" and c.get("text", "").strip():
-                out.append({"text": c["text"].strip()[:2000], "status": "completed"})
-    return out

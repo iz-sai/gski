@@ -23,7 +23,7 @@ gski/
     ├── nanoscope_lib/      # nanoscope video transcode, GCS upload, interactions API
     ├── ocm.py              # gski ocm — manage opencode orchestrator sessions (ledger in .ocm/)
     ├── ocq.py              # gski ocq — orchestrate opencode worker sessions (ledger in .ocq/)
-    ├── ocq_lib/            # ocq API, ledger, web dashboard & OpenCode TUI plugin (ocq_lib/tui)
+    ├── ocq_lib/            # ocq API, ledger & OpenCode TUI plugin (ocq_lib/tui)
     ├── omni.py             # gski omni — Gemini Omni Flash video gen/edit (stateful jobs)
     ├── omni_lib/           # omni job state, interactions/video plumbing
     ├── solver.py           # gski solver — creative problem-solving (TRIZ, SCAMPER, lateral, hats, morph)
@@ -87,18 +87,15 @@ gski omni generate "prompt" [--image FILE]... [--video FILE]... [--aspect-ratio 
 gski omni edit <job-id> "prompt" [--image FILE]... [--video FILE]... [--aspect-ratio 16:9|9:16] [--resolution 360p|720p|1080p|4k] [--output FILE] [--async]
 gski omni extend <job-id> ["prompt"] [--image FILE]... [--video FILE]... [--output FILE] [--async]
 gski omni list|status|wait|show|rm ...
-gski ocm start NAME "task" [--dir DIR] [--model provider/model] [--variant V] [--allow 'action:pattern']...
+gski ocm start NAME "task" [--dir DIR] [--model provider/model] [--allow 'action:pattern']...
 gski ocm ls [--status S...] | show NAME [--chars N] | wait [--timeout S]
 gski ocm send NAME "text" [--queue] [--allow 'action:pattern']... | send .. "text" | done|fail NAME [--note] | abort [NAME]
+gski ocq spawn RUN "task"... [--file F|-] [--agent worker|builder] [--model M] [--allow 'action:pattern']...
+gski ocq wait RUN [--any] [--timeout S]
+gski ocq ls [RUN] [--status S...] | show RUN ID [--chars N]
+gski ocq send RUN ID "text" [--queue] [--allow 'action:pattern']... | send .. "text"
+gski ocq abort RUN [ID...]
 gski ocq serve [--port 4096]   # optional; default is the opencode v2 background service
-gski ocq init RUN [--agent A] [--model provider/model] [--variant V] [--concurrency N]
-gski ocq add RUN ["task"]... [--file F|-] [--deps IDS]
-gski ocq ls | ledger RUN [--status S...] [--all]
-gski ocq spawn RUN [ID...] [--allow 'action:pattern']... [--agent A] [--model M] [--variant V]
-gski ocq wait RUN [--timeout S] | result RUN ID
-gski ocq done|fail RUN ID... [--note] | retry RUN ID... [--feedback] | abort RUN [ID...]
-gski ocq send RUN ID "text" [--queue] | send .. "text"   # message worker or parent orchestrator
-gski ocq dash [--port 4097]   # read-only web dashboard; projects registry in ~/.local/state/ocq/projects
 gski solver triz [--list params|principles | -i ID -w ID | -r] | scamper [-n N] | lateral [-n N] | hats [-s SEQ | -r] | morph AXES... [-n N]
 gski tgscope info|search|show <export-dir-or-result.json> ...
   search "query" [--regex] [--case-sensitive] [--since YYYY-MM-DD] [--until YYYY-MM-DD] [--media KIND] [--min-reactions N] [--limit N] [--width N] [--json]

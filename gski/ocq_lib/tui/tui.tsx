@@ -1,6 +1,6 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs"
 import { homedir } from "node:os"
-import { dirname, join } from "node:path"
+import { basename, dirname, join } from "node:path"
 import { Plugin } from "@opencode/plugin/tui"
 import { TextAttributes, type RGBA, type ScrollBoxRenderable } from "@opentui/core"
 import { useTerminalDimensions } from "@opentui/solid"
@@ -12,13 +12,15 @@ const ORDER = ["running", "reported", "failed", "pending", "done"]
 const BAR = ["done", "reported", "running", "failed", "pending"]
 const HEAD = 12
 const ROW = 4
-const STRIP = 5
 
 type Tokens = { input: number; output: number; reasoning: number; cache_read: number; cache_write: number }
 type Task = Record<string, any> & { id: string; status: string; attempts: number; cost: number }
 type Run = {
+  key: string
+  kind: "run" | "ocm" | "orch"
   name: string
   dir: string
+  projectDir: string
   cfg: Record<string, any>
   tasks: Task[]
   counts: Record<string, number>
@@ -26,6 +28,7 @@ type Run = {
   cost: number
   last: number
   brief: string
+  stream?: Stream
 }
 type Act = { text: string; status: string }
 type Live = { state: string; cost: number; tokens?: Tokens; activity: Act[] }
@@ -43,6 +46,24 @@ const now = () => Math.floor(Date.now() / 1000)
 const round4 = (n: number) => Math.round(n * 1e4) / 1e4
 const money = (c: number) => "$" + (c || 0).toFixed(2)
 const flat = (s: any) => String(s ?? "").replace(/\s+/g, " ").trim()
+
+function fmtDateTime(sec?: number) {
+  if (!sec) return ""
+  const d = new Date(sec * 1000)
+  const p = (n: number) => String(n).padStart(2, "0")
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
+}
+
+function fmtModelRef(m: any): string {
+  if (!m) return ""
+  if (typeof m === "string") return m
+  const base = [m.providerID, m.id || m.modelID].filter(Boolean).join("/")
+  return base + (m.variant ? `#${m.variant}` : "")
+}
+
+function clip(s: string, n: number) {
+  return s.length <= n ? s : s.slice(0, n - 1) + "…"
+}
 
 function dur(s?: number) {
   if (s == null || s < 0) return ""
@@ -140,9 +161,10 @@ function loadOcm(root: string): Ocm | undefined {
       try {
         const ev = JSON.parse(line)
         if (!ev || ev.id == null) continue
-        const { t: ts, denied: _d, ...rest } = ev
+        const { t: ts, denied, ...rest } = ev
         const s = byId.get(ev.id) ?? { id: ev.id }
         s.updated = ts
+        if (denied) (s.denied ??= []).push(denied)
         Object.assign(s, rest)
         byId.set(ev.id, s)
       } catch {}
@@ -154,7 +176,7 @@ function loadOcm(root: string): Ocm | undefined {
   return ocm
 }
 
-function scanOcm(dir: string, runsList: Run[]): Ocm | undefined {
+function scanOcm(dir: string, runsList: Run[], extraSid?: string): Ocm | undefined {
   const up = findUp(dir, ".ocm")
   if (up) {
     const direct = loadOcm(up)
@@ -167,6 +189,7 @@ function scanOcm(dir: string, runsList: Run[]): Ocm | undefined {
     return undefined
   }
   const orchIds = new Set(runsList.map((r) => r.cfg?.orchestrator).filter(Boolean))
+  if (extraSid) orchIds.add(extraSid)
   for (const p of projects) {
     const ocm = loadOcm(p)
     if (!ocm) continue
@@ -183,7 +206,7 @@ function scanOcm(dir: string, runsList: Run[]): Ocm | undefined {
 
 const cache = new Map<string, { key: string; run: Run }>()
 
-function loadRun(dir: string, name: string): Run | undefined {
+function loadRun(dir: string, name: string, rootDir: string): Run | undefined {
   const lp = join(dir, "ledger.jsonl")
   const rp = join(dir, "run.json")
   const bp = join(dir, "brief.md")
@@ -202,8 +225,11 @@ function loadRun(dir: string, name: string): Run | undefined {
     last = Math.floor(statSync(existsSync(lp) ? lp : rp).mtimeMs / 1000)
   } catch {}
   const run: Run = {
+    key: `run:${dir}`,
+    kind: "run",
     name,
     dir,
+    projectDir: cfg.dir || rootDir,
     cfg,
     tasks,
     counts,
@@ -226,14 +252,36 @@ function scan(root: string): Run[] {
   }
   return names
     .filter((n) => existsSync(join(base, n, "run.json")))
-    .map((n) => loadRun(join(base, n), n))
+    .map((n) => loadRun(join(base, n), n, root))
     .filter((r): r is Run => !!r)
     .sort((a, b) => b.last - a.last)
 }
 
-const isLive = (r: Run) => !!(r.counts.running || r.counts.pending || r.counts.reported)
-const runLabel = (r: Run) =>
-  ` ${r.name} ${r.counts.done || 0}/${r.total}${r.counts.running ? ` ${r.counts.running}▸` : ""}${r.counts.reported ? ` ${r.counts.reported}?` : ""} `
+function streamStatusMark(s?: string) {
+  if (s === "running") return "▸"
+  if (s === "reported") return "?"
+  if (s === "failed") return "✗"
+  if (s === "done") return "✓"
+  return "○"
+}
+
+function runLabel(r: Run, activeIds?: Set<string>) {
+  const proj = r.projectDir ? basename(r.projectDir) : ""
+  const dt = fmtDateTime(r.last)
+  const suffix = dt ? ` · ${dt}` : ""
+  if (r.kind === "ocm") {
+    const label = proj ? `${proj}/ocm:${r.name}` : `ocm:${r.name}`
+    return ` ${label} ${streamStatusMark(r.stream?.status)}${suffix} `
+  }
+  if (r.kind === "orch") {
+    const busy = activeIds?.has(r.cfg?.orchestrator)
+    const label = proj ? `${proj}/orch:${clip(r.name, 22)}` : `orch:${clip(r.name, 22)}`
+    return ` ${label} ${busy ? "▸" : "○"}${suffix} `
+  }
+  const label = proj ? `${proj}/${r.name}` : r.name
+  const ocmRunning = !r.counts.running && r.stream?.status === "running"
+  return ` ${label} ${r.counts.done || 0}/${r.total}${r.counts.running ? ` ${r.counts.running}▸` : ocmRunning ? " ▸" : ""}${r.counts.reported ? ` ${r.counts.reported}?` : ""}${suffix} `
+}
 
 function assistants(msgs: any[]) {
   return msgs.filter((m) => m?.type === "assistant")
@@ -275,8 +323,11 @@ export default Plugin.define({
   id: "gski.ocq",
   setup(context) {
     const [root, setRoot] = createSignal<string>()
-    const [runs, setRuns] = createSignal<Run[]>([])
+    const [diskRuns, setDiskRuns] = createSignal<Run[]>([])
     const [live, setLive] = createSignal<Record<string, Live>>({})
+    const [orchLive, setOrchLive] = createSignal<Record<string, Live>>({})
+    const [activeIds, setActiveIds] = createSignal<Set<string>>(new Set())
+    const [remoteSessions, setRemoteSessions] = createSignal<any[]>([])
     const [replies, setReplies] = createSignal<Record<string, string>>({})
     const [doneTokens, setDoneTokens] = createSignal<Record<string, Tokens>>({})
     const [server, setServer] = createSignal(true)
@@ -301,11 +352,6 @@ export default Plugin.define({
       return t.text.muted
     }
 
-    const isWorkerSession = (sid?: string) => !!sid && runs().some((run) => run.tasks.some((t) => t.session === sid))
-    const isOcmOrch = (sid?: string) => !!sid && !!ocm()?.streams.some((s) => s.session === sid)
-    const isOcmMgr = (sid?: string) =>
-      !!sid && (ocm()?.manager === sid || !!ocm()?.streams.some((s) => s.manager === sid))
-
     const activeSessionId = () => {
       const r = context.ui.router.current()
       return r.type === "session" ? r.sessionID : (r as any).data?.sessionID
@@ -316,6 +362,117 @@ export default Plugin.define({
       const d = sid ? (context.data.session.get(sid) as any)?.location?.directory : undefined
       return d || context.location?.directory || context.data.location.default()?.directory || process.cwd()
     }
+
+    const isLive = (r: Run) =>
+      !!(
+        r.counts.running ||
+        r.counts.pending ||
+        r.counts.reported ||
+        r.stream?.status === "running" ||
+        r.stream?.status === "reported" ||
+        (r.kind === "orch" && activeIds().has(r.cfg?.orchestrator))
+      )
+
+    const runs = createMemo<Run[]>(() => {
+      const m = ocm()
+      const streamBySid = new Map<string, Stream>()
+      if (m) {
+        for (const s of m.streams) {
+          if (s.session) streamBySid.set(s.session, s)
+        }
+      }
+
+      const out: Run[] = []
+      const coveredSids = new Set<string>()
+      for (const r of diskRuns()) {
+        const sid = r.cfg?.orchestrator
+        if (sid) coveredSids.add(sid)
+        const st = sid ? streamBySid.get(sid) : undefined
+        out.push(st ? { ...r, stream: st, last: Math.max(r.last, st.updated || 0) } : r)
+      }
+
+      if (m) {
+        for (const s of m.streams) {
+          if (s.session && coveredSids.has(s.session)) continue
+          if (s.session) coveredSids.add(s.session)
+          const pdir = s.dir || m.root
+          out.push({
+            key: `ocm:${m.root}:${s.id}`,
+            kind: "ocm",
+            name: s.id,
+            dir: pdir,
+            projectDir: pdir,
+            cfg: { orchestrator: s.session, dir: pdir, agent: "orchestrator", model: s.model },
+            tasks: [],
+            counts: {},
+            total: 0,
+            cost: round4(s.cost || 0),
+            last: s.updated || s.finished || s.started || 0,
+            brief: "",
+            stream: s,
+          })
+        }
+      }
+
+      const newestExisting = out.reduce((mx, r) => Math.max(mx, r.last), 0)
+      const watchDir = root() ?? m?.root ?? activeDir()
+      const act = activeIds()
+      const curSid = activeSessionId()
+      const trackedOrch = orchSession()
+      const candidates = new Map<string, any>()
+      try {
+        for (const s of context.data.session.list() as any[]) {
+          if (s?.id) candidates.set(s.id, s)
+        }
+      } catch {}
+      for (const s of remoteSessions()) {
+        if (s?.id && !candidates.has(s.id)) candidates.set(s.id, s)
+      }
+      const standalone = [...candidates.values()]
+        .filter((s: any) => {
+          if (!s?.id || s.time?.archived || coveredSids.has(s.id)) return false
+          if (s.agent !== "orchestrator") return false
+          if (s.title?.startsWith("ocm/") || s.title?.startsWith("ocq/")) return false
+          const sdir = s.location?.directory
+          return !watchDir || !sdir || sdir === watchDir
+        })
+        .sort((a: any, b: any) => (b.time?.updated || b.time?.created || 0) - (a.time?.updated || a.time?.created || 0))
+
+      let addedFallback = false
+      for (const s of standalone) {
+        const updatedSec = Math.floor((s.time?.updated || s.time?.created || 0) / 1000)
+        const keep =
+          act.has(s.id) ||
+          s.id === curSid ||
+          s.id === trackedOrch ||
+          (newestExisting > 0 && updatedSec > newestExisting) ||
+          (out.length === 0 && !addedFallback)
+        if (!keep) continue
+        addedFallback = true
+        const pdir = s.location?.directory || watchDir
+        out.push({
+          key: `orch:${s.id}`,
+          kind: "orch",
+          name: flat(s.title) || s.id.slice(0, 12),
+          dir: pdir,
+          projectDir: pdir,
+          cfg: { orchestrator: s.id, dir: pdir, agent: "orchestrator", model: fmtModelRef(s.model) },
+          tasks: [],
+          counts: {},
+          total: 0,
+          cost: round4(s.cost || 0),
+          last: updatedSec,
+          brief: "",
+        })
+      }
+
+      return out.sort((a, b) => b.last - a.last)
+    })
+
+    const isWorkerSession = (sid?: string) => !!sid && diskRuns().some((run) => run.tasks.some((t) => t.session === sid))
+    const isOcmOrch = (sid?: string) => !!sid && !!ocm()?.streams.some((s) => s.session === sid)
+    const isOcmMgr = (sid?: string) =>
+      !!sid && (ocm()?.manager === sid || !!ocm()?.streams.some((s) => s.manager === sid))
 
     const trackSession = (sid?: string) => {
       if (!sid) return
@@ -339,62 +496,121 @@ export default Plugin.define({
       const dir = activeDir()
       const r = findUp(dir, ".ocq")
       if (r !== root()) setRoot(r)
-      const rs = r ? scan(r) : []
-      setRuns(rs)
-      setOcm(scanOcm(dir, rs))
+      const localRuns = r ? scan(r) : []
+      const m = scanOcm(dir, localRuns, activeSessionId())
+      const byDir = new Map<string, Run>()
+      for (const run of localRuns) byDir.set(run.dir, run)
+      if (m) {
+        for (const s of m.streams) {
+          if (s.dir && s.dir !== r && s.session) {
+            for (const run of scan(s.dir)) {
+              if (run.cfg?.orchestrator === s.session && !byDir.has(run.dir)) byDir.set(run.dir, run)
+            }
+          }
+        }
+      }
+      setDiskRuns([...byDir.values()])
+      setOcm(m)
       trackSession(activeSessionId())
     }
 
     const current = createMemo(() => {
       const rs = runs()
-      return rs.find((r) => r.name === selRun()) ?? rs.find(isLive) ?? rs[0]
+      return rs.find((r) => r.key === selRun()) ?? rs.find(isLive) ?? rs[0]
     })
 
     let busy = false
     const refreshLive = async () => {
-      const run = current()
-      const r = root()
-      if (busy || !run || !r) return
+      if (busy) return
       busy = true
       try {
-        const active: Record<string, any> = (await context.client.session.active()) ?? {}
+        const rawActive: any = await context.client.session.active()
+        const active: Record<string, any> = rawActive?.data ?? rawActive ?? {}
         setServer(true)
-        const running = run.tasks.filter((t) => t.status === "running" && t.session)
-        const shells = running.length
-          ? listOf(await context.client.shell.list({ location: { directory: r } }).catch(() => undefined))
-          : []
-        const next: Record<string, Live> = {}
-        await Promise.all(
-          running.map(async (t) => {
-            const sid = t.session as string
-            const [info, msgs] = await Promise.all([
-              context.client.session.get({ sessionID: sid }).catch(() => undefined),
-              context.client.message
-                .list({ sessionID: sid, limit: 15, order: "desc" })
-                .then(listOf)
-                .catch(() => []),
-            ])
-            let state = active[sid] ? (active[sid].type === "retry" ? "retry" : "busy") : "idle"
-            let acts = activity(msgs)
-            if (state === "idle") {
-              const bg = shells.filter(
-                (s: any) => s.status === "running" && (s.metadata || {}).sessionID === sid,
-              )
-              if (bg.length) {
-                state = "waiting"
-                acts = [...bg.map((b: any) => ({ text: `bg shell: ${b.command}`, status: "running" })), ...acts]
+        setActiveIds(new Set(Object.keys(active)))
+
+        const watchDir = root() ?? ocm()?.root ?? activeDir()
+        if (watchDir) {
+          const slist = listOf(
+            await context.client.session.list({ directory: watchDir, limit: 30 }).catch(() => undefined),
+          )
+          setRemoteSessions(slist)
+        }
+
+        const run = current()
+        if (!run) return
+
+        if (run.kind === "run") {
+          const running = run.tasks.filter((t) => t.status === "running" && t.session)
+          const shells = running.length
+            ? listOf(await context.client.shell.list({ location: { directory: run.projectDir } }).catch(() => undefined))
+            : []
+          const next: Record<string, Live> = {}
+          await Promise.all(
+            running.map(async (t) => {
+              const sid = t.session as string
+              const [rawInfo, msgs] = await Promise.all([
+                context.client.session.get({ sessionID: sid }).catch(() => undefined),
+                context.client.message
+                  .list({ sessionID: sid, limit: 15, order: "desc" })
+                  .then(listOf)
+                  .catch(() => []),
+              ])
+              const info = (rawInfo as any)?.data ?? rawInfo
+              let state = active[sid] ? (active[sid].type === "retry" ? "retry" : "busy") : "idle"
+              let acts = activity(msgs)
+              if (state === "idle") {
+                const bg = shells.filter(
+                  (s: any) => s.status === "running" && (s.metadata || {}).sessionID === sid,
+                )
+                if (bg.length) {
+                  state = "waiting"
+                  acts = [...bg.map((b: any) => ({ text: `bg shell: ${b.command}`, status: "running" })), ...acts]
+                }
               }
+              next[t.id] = { state, cost: info?.cost || 0, tokens: info?.tokens, activity: acts }
+            }),
+          )
+          setLive(next)
+          const missing = run.tasks.filter(
+            (t) => t.session && t.status !== "running" && t.status !== "pending" && !t.tokens && !doneTokens()[t.session],
+          )
+          for (const t of missing.slice(0, 20)) {
+            const rawInfo: any = await context.client.session.get({ sessionID: t.session }).catch(() => undefined)
+            const info = rawInfo?.data ?? rawInfo
+            if (info) setDoneTokens((d) => ({ ...d, [t.session]: sumTokens([info.tokens]) }))
+          }
+        } else {
+          const sid = run.cfg?.orchestrator as string | undefined
+          if (!sid) return
+          const [rawInfo, msgs, shells] = await Promise.all([
+            context.client.session.get({ sessionID: sid }).catch(() => undefined),
+            context.client.message
+              .list({ sessionID: sid, limit: 20, order: "desc" })
+              .then(listOf)
+              .catch(() => []),
+            listOf(await context.client.shell.list({ location: { directory: run.projectDir } }).catch(() => undefined)),
+          ])
+          const info = (rawInfo as any)?.data ?? rawInfo
+          let state = active[sid] ? (active[sid].type === "retry" ? "retry" : "busy") : "idle"
+          let acts = activity(msgs)
+          if (state === "idle") {
+            const bg = shells.filter((s: any) => s.status === "running" && (s.metadata || {}).sessionID === sid)
+            if (bg.length) {
+              state = "waiting"
+              acts = [...bg.map((b: any) => ({ text: `bg shell: ${b.command}`, status: "running" })), ...acts]
             }
-            next[t.id] = { state, cost: (info as any)?.cost || 0, tokens: (info as any)?.tokens, activity: acts }
-          }),
-        )
-        setLive(next)
-        const missing = run.tasks.filter(
-          (t) => t.session && t.status !== "running" && t.status !== "pending" && !t.tokens && !doneTokens()[t.session],
-        )
-        for (const t of missing.slice(0, 20)) {
-          const info: any = await context.client.session.get({ sessionID: t.session }).catch(() => undefined)
-          if (info) setDoneTokens((d) => ({ ...d, [t.session]: sumTokens([info.tokens]) }))
+          }
+          setOrchLive((prev) => ({
+            ...prev,
+            [sid]: {
+              state,
+              cost: info?.cost || 0,
+              tokens: info?.tokens ? sumTokens([info.tokens]) : undefined,
+              activity: acts,
+            },
+          }))
+          if (msgs.length) setReplies((prev) => ({ ...prev, [sid]: lastText(msgs).slice(0, 8000) }))
         }
       } catch {
         setServer(false)
@@ -403,15 +619,17 @@ export default Plugin.define({
       }
     }
 
-    const fetchReply = async (t?: Task) => {
-      if (!t?.session) return
-      if (replies()[t.session] !== undefined && t.status !== "running") return
+    const fetchSessionReply = async (sid?: string, running = false) => {
+      if (!sid) return
+      if (replies()[sid] !== undefined && !running) return
       const msgs = await context.client.message
-        .list({ sessionID: t.session, limit: 30, order: "desc" })
+        .list({ sessionID: sid, limit: 30, order: "desc" })
         .then(listOf)
         .catch(() => undefined)
-      if (msgs) setReplies((r) => ({ ...r, [t.session]: lastText(msgs).slice(0, 8000) }))
+      if (msgs) setReplies((r) => ({ ...r, [sid]: lastText(msgs).slice(0, 8000) }))
     }
+
+    const fetchReply = async (t?: Task) => fetchSessionReply(t?.session, t?.status === "running")
 
     const rows = createMemo(() => {
       const run = current()
@@ -445,6 +663,16 @@ export default Plugin.define({
     createEffect(
       on(selected, (t) => {
         if (opened()) void fetchReply(t)
+      }),
+    )
+    createEffect(
+      on(current, (r) => {
+        if (opened() && r && r.kind !== "run") {
+          void fetchSessionReply(
+            r.cfg?.orchestrator,
+            r.stream?.status === "running" || activeIds().has(r.cfg?.orchestrator),
+          )
+        }
       }),
     )
 
@@ -510,7 +738,7 @@ export default Plugin.define({
       for (const r of runs()) {
         if (r.cfg?.orchestrator) return r.cfg.orchestrator
       }
-      const d = root() ?? m?.root
+      const d = root() ?? m?.root ?? activeDir()
       const canBeOrch = (s: any) =>
         s?.agent !== "manager" &&
         s?.agent !== "worker" &&
@@ -544,7 +772,12 @@ export default Plugin.define({
 
     const resolveManager = async (): Promise<string | undefined> => {
       const m = ocm()
-      const orchSid = current()?.cfg?.orchestrator
+      const cur = current()
+      if (cur?.stream?.manager) {
+        const ok = await validSession(cur.stream.manager)
+        if (ok) return ok
+      }
+      const orchSid = cur?.cfg?.orchestrator
       if (m && orchSid) {
         const matched = m.streams.find((s) => s.session === orchSid && s.manager)
         const ok = await validSession(matched?.manager)
@@ -618,18 +851,40 @@ export default Plugin.define({
           {(r) => (
             <box flexShrink={0} onMouseUp={toggle}>
               <text fg={context.theme.text.muted} wrapMode="none">
-                <span style={{ fg: context.theme.text.base }}>ocq </span>
+                <span style={{ fg: context.theme.text.base }}>
+                  {r().kind === "run" ? "ocq " : r().kind === "ocm" ? "ocm " : "orch "}
+                </span>
                 {r().name}{" "}
-                <Show when={r().counts.running}>
-                  <span style={{ fg: statusColor("running") }}>{r().counts.running}▸ </span>
+                <Show
+                  when={r().kind === "run"}
+                  fallback={
+                    <>
+                      <Show
+                        when={
+                          r().stream?.status === "running" ||
+                          (r().kind === "orch" && activeIds().has(r().cfg?.orchestrator))
+                        }
+                      >
+                        <span style={{ fg: statusColor("running") }}>▸ </span>
+                      </Show>
+                      <Show when={r().stream?.status === "reported"}>
+                        <span style={{ fg: statusColor("reported") }}>? </span>
+                      </Show>
+                      {r().cost ? money(r().cost) : ""}
+                    </>
+                  }
+                >
+                  <Show when={r().counts.running || r().stream?.status === "running"}>
+                    <span style={{ fg: statusColor("running") }}>{r().counts.running || ""}▸ </span>
+                  </Show>
+                  <Show when={r().counts.reported}>
+                    <span style={{ fg: statusColor("reported") }}>{r().counts.reported}? </span>
+                  </Show>
+                  <Show when={r().counts.failed}>
+                    <span style={{ fg: statusColor("failed") }}>{r().counts.failed}✗ </span>
+                  </Show>
+                  {r().counts.done || 0}/{r().total} {money(r().cost)}
                 </Show>
-                <Show when={r().counts.reported}>
-                  <span style={{ fg: statusColor("reported") }}>{r().counts.reported}? </span>
-                </Show>
-                <Show when={r().counts.failed}>
-                  <span style={{ fg: statusColor("failed") }}>{r().counts.failed}✗ </span>
-                </Show>
-                {r().counts.done || 0}/{r().total} {money(r().cost)}
                 {lr().length > 1 ? ` +${lr().length - 1}` : ""}
               </text>
             </box>
@@ -655,6 +910,16 @@ export default Plugin.define({
       return ""
     }
 
+    function shortTier(t: any) {
+      const m = String(t.model || "")
+        .split("/")
+        .pop()!
+        .split("#")[0]
+        .replace("gemini-4-", "")
+      const a = t.agent && t.agent !== "worker" ? t.agent : ""
+      return [a, m].filter(Boolean).join("/")
+    }
+
     function TaskRow(props: { t: any; sel: boolean }) {
       const t = () => props.t
       const dot = () => {
@@ -664,6 +929,7 @@ export default Plugin.define({
       }
       const meta = () =>
         [
+          shortTier(t()),
           t().attempts > 1 ? `a${t().attempts}` : "",
           t().denied?.length ? `denied ${t().denied.length}` : "",
           t().cost ? money(t().cost) : "",
@@ -712,8 +978,9 @@ export default Plugin.define({
         const x = t()
         const reply = x.session ? replies()[x.session] : undefined
         return [
-          ["Report", x.worker ? `${x.worker}: ${x.note || ""}` : x.note],
+          ["Report", x.status === "reported" && x.worker ? `${x.worker}: ${x.note || ""}` : x.note],
           ["Artifact", x.artifact],
+          ["Model", [x.agent, x.model].filter(Boolean).join(" · ")],
           ["Message", x.msg],
           [
             "Activity",
@@ -761,6 +1028,60 @@ export default Plugin.define({
       )
     }
 
+    function OrchDetail(props: { run: Run; live?: Live; ref: (s: ScrollBoxRenderable) => void }) {
+      const r = () => props.run
+      const st = () => r().stream
+      const sid = () => r().cfg?.orchestrator as string | undefined
+      const tk = () => (props.live?.tokens ?? st()?.tokens) as Tokens | undefined
+      const sections = () => {
+        const s = st()
+        const id = sid()
+        const reply = id ? replies()[id] : undefined
+        return [
+          [
+            "Activity",
+            props.live?.activity
+              ?.map((a: Act) => (a.status === "error" ? "✗ " : a.status === "running" ? "▸ " : "✓ ") + flat(a.text))
+              .join("\n"),
+          ],
+          ["Report", s?.note],
+          ["Message", s?.msg],
+          ["Task", s?.task],
+          ["Directory", r().projectDir],
+          ["Model", r().cfg?.model],
+          ["Allow", s?.allow?.length ? s.allow.join(", ") : ""],
+          ["Denied", (s?.denied || []).join("\n")],
+          [
+            "Tokens",
+            tk()
+              ? `in ${kn(tk()!.input)} · out ${kn(tk()!.output)} · reasoning ${kn(tk()!.reasoning)} · cache r ${kn(tk()!.cache_read)} w ${kn(tk()!.cache_write)}`
+              : "",
+          ],
+          ["Last reply", reply === undefined && id ? "loading…" : reply],
+          ["Session", id],
+        ].filter(([, v]) => v)
+      }
+      return (
+        <scrollbox ref={props.ref} flexGrow={1} scrollbarOptions={{ visible: false }}>
+          <box flexDirection="column" paddingLeft={1} paddingRight={1} gap={1}>
+            <text fg={context.theme.text.muted}>
+              No workers spawned yet — press Enter or O to open orchestrator session.
+            </text>
+            <For each={sections()}>
+              {([k, v]) => (
+                <box flexDirection="column">
+                  <text fg={context.theme.text.muted}>{k}</text>
+                  <text fg={context.theme.text.base} wrapMode="word">
+                    {String(v)}
+                  </text>
+                </box>
+              )}
+            </For>
+          </box>
+        </scrollbox>
+      )
+    }
+
     function Page() {
       const dims = useTerminalDimensions()
       const [offset, setOffset] = createSignal(0)
@@ -770,6 +1091,13 @@ export default Plugin.define({
       setClock(now())
       void refreshLive()
       void fetchReply(selected())
+      const initCur = current()
+      if (initCur && initCur.kind !== "run") {
+        void fetchSessionReply(
+          initCur.cfg?.orchestrator,
+          initCur.stream?.status === "running" || activeIds().has(initCur.cfg?.orchestrator),
+        )
+      }
       onCleanup(() => setOpened(false))
 
       const wide = () => dims().width >= 110
@@ -786,34 +1114,65 @@ export default Plugin.define({
       })
       createEffect(() => setOffset(win()))
       createEffect(on(selected, () => detail?.scrollTo(0)))
+      createEffect(on(current, () => detail?.scrollTo(0)))
 
       const pageRows = createMemo(() => shown().slice(win(), win() + perPage()))
       const strip = createMemo(() => {
         const list = runs()
-        const sel = Math.max(0, list.findIndex((r) => r.name === current()?.name))
-        const start = sel < STRIP ? 0 : sel - STRIP + 1
-        const items = list.slice(start, start + STRIP)
-        return { start, items, more: list.length - start - items.length }
+        if (!list.length) return { start: 0, items: [] as Run[], more: 0 }
+        const act = activeIds()
+        const sel = Math.max(0, list.findIndex((r) => r.key === current()?.key))
+        const avail = Math.max(20, dims().width - 4)
+        const w = (r: Run) => runLabel(r, act).length + 3
+        const overhead = (start: number, end: number) =>
+          (start > 0 ? `‹ ${start}   `.length : 0) + (end < list.length ? `${list.length - end} ›`.length : 0)
+        let start = sel
+        let end = sel + 1
+        let used = w(list[sel])
+        while (start > 0) {
+          const nextUsed = used + w(list[start - 1])
+          if (nextUsed + overhead(start - 1, end) > avail) break
+          start--
+          used = nextUsed
+        }
+        while (end < list.length) {
+          const nextUsed = used + w(list[end])
+          if (nextUsed + overhead(start, end + 1) > avail) break
+          used = nextUsed
+          end++
+        }
+        return { start, items: list.slice(start, end), more: list.length - end }
       })
 
       const select = (i: number) => {
+        if (current()?.kind !== "run") {
+          detail?.scrollTo(i === 0 ? 0 : 999999)
+          return
+        }
         const list = shown()
         if (!list.length) return
         setSelId(list[Math.max(0, Math.min(list.length - 1, i))].id)
       }
-      const move = (d: number) => select(selIndex() + d)
+      const move = (d: number) => {
+        if (current()?.kind !== "run") {
+          detail?.scrollBy(d * 3)
+          return
+        }
+        select(selIndex() + d)
+      }
       const pickRun = (d: number) => {
         const list = runs()
         if (!list.length) return
-        const i = list.findIndex((r) => r.name === current()?.name)
+        const i = list.findIndex((r) => r.key === current()?.key)
         const next = list[Math.max(0, Math.min(list.length - 1, i + d))]
-        if (next.name === current()?.name) return
-        setSelRun(next.name)
+        if (next.key === current()?.key) return
+        setSelRun(next.key)
         setSelId(undefined)
         setLive({})
         void refreshLive()
       }
       const openSession = () => {
+        if (current()?.kind !== "run") return void openOrchestratorSession()
         const t = selected()
         if (!t?.session) return context.ui.toast.show({ message: "No session for this task", variant: "warning" })
         context.ui.router.navigate({ type: "session", sessionID: t.session })
@@ -843,7 +1202,7 @@ export default Plugin.define({
           { bind: "h,left", title: "Previous run", group: "ocq", run: () => pickRun(-1) },
           { bind: "shift+j", title: "Scroll detail down", group: "ocq", run: () => detail?.scrollBy(3) },
           { bind: "shift+k", title: "Scroll detail up", group: "ocq", run: () => detail?.scrollBy(-3) },
-          { bind: "return,o", title: "Open worker session", group: "ocq", run: openSession },
+          { bind: "return,o", title: "Open worker/orchestrator session", group: "ocq", run: openSession },
           { bind: "shift+o,O", title: "Open orchestrator session", group: "ocq", run: openOrchestratorSession },
           { bind: "m,shift+m,M", title: "Open manager session", group: "ocq", run: openManagerSession },
           { bind: "space", title: "Zoom detail", group: "ocq", run: () => setZoom((z) => !z) },
@@ -857,7 +1216,12 @@ export default Plugin.define({
               refreshFiles()
               void refreshLive()
               setReplies({})
-              void fetchReply(selected())
+              const cur = current()
+              if (cur && cur.kind !== "run") {
+                void fetchSessionReply(cur.cfg?.orchestrator, true)
+              } else {
+                void fetchReply(selected())
+              }
             },
           },
           { bind: "q,escape", title: "Close ocq", group: "ocq", run: close },
@@ -867,6 +1231,7 @@ export default Plugin.define({
 
       const muted = () => context.theme.text.muted
       const base = () => context.theme.text.base
+      const headerRoot = () => root() ?? ocm()?.root ?? current()?.projectDir
 
       const Body = () => (
         <Show
@@ -911,6 +1276,104 @@ export default Plugin.define({
         </Show>
       )
 
+      const stat = (n: any, label: string, color?: RGBA) => (
+        <>
+          <span style={{ fg: color ?? base(), attributes: TextAttributes.BOLD }}>{String(n)}</span>
+          <span style={{ fg: muted() }}>{` ${label}     `}</span>
+        </>
+      )
+
+      const RunView = (props: { run: Run }) => {
+        const tk = createMemo(() => sumTokens(rows().map((t) => t.tokens)))
+        const cost = createMemo(() => rows().reduce((a, t) => a + (t.cost || 0), 0))
+        const c = () => props.run.counts
+        return (
+          <>
+            <text wrapMode="none" truncate height={1} flexShrink={0}>
+              <span style={{ fg: base(), attributes: TextAttributes.BOLD }}>{props.run.name}</span>
+              <span style={{ fg: muted() }}>
+                {props.run.projectDir ? "  " + context.ui.format.path(props.run.projectDir) : ""}
+                {props.run.last ? " · " + fmtDateTime(props.run.last) : ""}
+                {props.run.stream ? ` · ocm/${props.run.stream.id} (${props.run.stream.status || "?"})` : ""}
+                {props.run.cfg.agent ? " · " + props.run.cfg.agent : ""}
+                {props.run.cfg.model ? " · " + props.run.cfg.model : ""}
+                {props.run.cfg.concurrency ? ` · concurrency ${props.run.cfg.concurrency}` : ""}
+              </span>
+            </text>
+            <text wrapMode="none" truncate height={1} flexShrink={0}>
+              {stat(`${c().done || 0}/${props.run.total}`, "done")}
+              {stat(c().running || 0, "running", c().running ? statusColor("running") : undefined)}
+              {c().reported ? stat(c().reported, "review", statusColor("reported")) : null}
+              {stat(c().failed || 0, "failed", c().failed ? statusColor("failed") : undefined)}
+              {c().pending ? stat(c().pending, "pending") : null}
+              {stat(money(cost()), "")}
+              {stat(kn(tk().input + tk().cache_read), "in")}
+              {stat(kn(tk().output + tk().reasoning), "out")}
+            </text>
+            <box height={1} flexShrink={0} />
+            <box height={1} flexShrink={0}>
+              <Bar counts={c()} total={props.run.total} width={dims().width - 4} />
+            </box>
+            <box height={1} flexShrink={0} />
+            <Body />
+          </>
+        )
+      }
+
+      const OrchView = (props: { run: Run }) => {
+        const sid = () => props.run.cfg?.orchestrator as string | undefined
+        const ol = () => (sid() ? orchLive()[sid()!] : undefined)
+        const st = () => props.run.stream
+        const status = () =>
+          st()?.status ||
+          (ol()?.state && ol()!.state !== "idle" ? "running" : activeIds().has(sid() || "") ? "running" : "idle")
+        const dot = () => {
+          const s = ol()?.state
+          if (!s) return ""
+          return s === "idle" ? " ○" : s === "waiting" ? " ◐" : " ●"
+        }
+        const cost = () => Math.max(props.run.cost, ol()?.cost || 0)
+        const tk = () => (ol()?.tokens ?? st()?.tokens) as Tokens | undefined
+        const elapsed = () => {
+          const s = st()
+          if (!s?.started) return ""
+          if (s.status === "running") return dur(clock() - s.started)
+          if (s.finished && s.finished >= s.started) return dur(s.finished - s.started)
+          return ""
+        }
+        return (
+          <>
+            <text wrapMode="none" truncate height={1} flexShrink={0}>
+              <span style={{ fg: base(), attributes: TextAttributes.BOLD }}>
+                {props.run.kind === "ocm" ? `ocm/${props.run.name}` : props.run.name}
+              </span>{" "}
+              <span style={{ fg: statusColor(status()) }}>
+                {status()}
+                {dot()}
+              </span>
+              <span style={{ fg: muted() }}>
+                {props.run.projectDir ? "  " + context.ui.format.path(props.run.projectDir) : ""}
+                {props.run.last ? " · " + fmtDateTime(props.run.last) : ""}
+                {props.run.cfg.model ? " · " + props.run.cfg.model : ""}
+              </span>
+            </text>
+            <text wrapMode="none" truncate height={1} flexShrink={0}>
+              {stat("0", "workers")}
+              {stat(money(cost()), "")}
+              {tk() ? stat(kn(tk()!.input + tk()!.cache_read), "in") : null}
+              {tk() ? stat(kn(tk()!.output + tk()!.reasoning), "out") : null}
+              {elapsed() ? stat(elapsed(), "") : null}
+            </text>
+            <box height={1} flexShrink={0} />
+            <box height={1} flexShrink={0}>
+              <Bar counts={{}} total={0} width={dims().width - 4} />
+            </box>
+            <box height={1} flexShrink={0} />
+            <OrchDetail run={props.run} live={ol()} ref={(s) => (detail = s)} />
+          </>
+        )
+      }
+
       return (
         <box
           width="100%"
@@ -924,7 +1387,9 @@ export default Plugin.define({
           <box flexDirection="row" height={1} flexShrink={0}>
             <text wrapMode="none" flexGrow={1} minWidth={0} truncate>
               <span style={{ fg: base(), attributes: TextAttributes.BOLD }}>ocq</span>
-              <span style={{ fg: muted() }}>{"   " + (root() ? context.ui.format.path(root()!) : "no .ocq here")}</span>
+              <span style={{ fg: muted() }}>
+                {"   " + (headerRoot() ? context.ui.format.path(headerRoot()!) : "no .ocq / .ocm here")}
+              </span>
             </text>
             <text wrapMode="none" flexShrink={0}>
               <span style={{ fg: server() ? statusColor("done") : statusColor("failed") }}>●</span>
@@ -936,7 +1401,7 @@ export default Plugin.define({
             <span style={{ fg: muted() }}>{strip().start ? `‹ ${strip().start}   ` : ""}</span>
             <For each={strip().items}>
               {(r) => {
-                const sel = () => r.name === current()?.name
+                const sel = () => r.key === current()?.key
                 return (
                   <>
                     <span
@@ -946,7 +1411,7 @@ export default Plugin.define({
                         attributes: sel() ? TextAttributes.BOLD : 0,
                       }}
                     >
-                      {runLabel(r)}
+                      {runLabel(r, activeIds())}
                     </span>
                     <span>{"   "}</span>
                   </>
@@ -960,53 +1425,20 @@ export default Plugin.define({
             when={current()}
             fallback={
               <box paddingTop={1}>
-                <text fg={muted()}>No ocq runs in this project.</text>
+                <text fg={muted()}>No ocq runs or active orchestrators in this project.</text>
               </box>
             }
           >
-            {(run) => {
-              const tk = createMemo(() => sumTokens(rows().map((t) => t.tokens)))
-              const cost = createMemo(() => rows().reduce((a, t) => a + (t.cost || 0), 0))
-              const c = () => run().counts
-              const stat = (n: any, label: string, color?: RGBA) => (
-                <>
-                  <span style={{ fg: color ?? base(), attributes: TextAttributes.BOLD }}>{String(n)}</span>
-                  <span style={{ fg: muted() }}>{` ${label}     `}</span>
-                </>
-              )
-              return (
-                <>
-                  <text wrapMode="none" truncate height={1} flexShrink={0}>
-                    <span style={{ fg: base(), attributes: TextAttributes.BOLD }}>{run().name}</span>
-                    <span style={{ fg: muted() }}>
-                      {run().cfg.agent ? "  " + run().cfg.agent : ""}
-                      {run().cfg.model ? " · " + run().cfg.model : ""} · concurrency {run().cfg.concurrency ?? 1}
-                    </span>
-                  </text>
-                  <text wrapMode="none" truncate height={1} flexShrink={0}>
-                    {stat(`${c().done || 0}/${run().total}`, "done")}
-                    {stat(c().running || 0, "running", c().running ? statusColor("running") : undefined)}
-                    {stat(c().reported || 0, "review", c().reported ? statusColor("reported") : undefined)}
-                    {stat(c().failed || 0, "failed", c().failed ? statusColor("failed") : undefined)}
-                    {stat(c().pending || 0, "pending")}
-                    {stat(money(cost()), "")}
-                    {stat(kn(tk().input + tk().cache_read), "in")}
-                    {stat(kn(tk().output + tk().reasoning), "out")}
-                  </text>
-                  <box height={1} flexShrink={0} />
-                  <box height={1} flexShrink={0}>
-                    <Bar counts={c()} total={run().total} width={dims().width - 4} />
-                  </box>
-                  <box height={1} flexShrink={0} />
-                  <Body />
-                </>
-              )
-            }}
+            {(run) => (
+              <Show when={run().kind === "run"} fallback={<OrchView run={run()} />}>
+                <RunView run={run()} />
+              </Show>
+            )}
           </Show>
           <box flexGrow={1} />
           <box height={1} flexShrink={0} />
           <text wrapMode="none" truncate height={1} flexShrink={0} fg={muted()}>
-            {`j/k task    gg/G ends    ^d/^u page    h/l run    ⏎ worker    O orch    ${hasManager() ? "M mgr    " : ""}space zoom    p pane    J/K scroll    b brief    r refresh    q close`}
+            {`j/k ${current()?.kind === "run" ? "task" : "scroll"}    gg/G ends    ^d/^u page    h/l run    ${current()?.kind === "run" ? "⏎ worker    O orch" : "⏎/O orch"}    ${hasManager() ? "M mgr    " : ""}space zoom    p pane    J/K scroll    b brief    r refresh    q close`}
           </text>
         </box>
       )

@@ -5,122 +5,53 @@ description: Manage opencode orchestrator sessions - align with the user on high
 
 # ocm
 
-`gski ocm` drives `orchestrator` (`O`) sessions on the shared opencode background
-service.
+`gski ocm` runs Orchestrator (O) sessions on the shared opencode background service so Manager (M) can drive multi-stage or long-running campaigns autonomously.
 
-Why this layer exists:
-- `O` is a team-lead for one bounded job: it inspects the codebase and inputs,
-  designs a procedure, runs workers via `gski ocq`, reviews, and iterates.
-- You (`M`) sit in the user's chair above `O` for larger, long-running (e.g.
-  overnight), multi-part goals that do not fit into a single `O` session. You
-  break a high-level goal into `O`-sized tasks, run multiple `O` sessions over
-  time (sequentially by default; parallel only across separate directories),
-  review their plans and outcomes, send mid-course or post-run corrections, and
-  adapt the next task based on what actually happened.
+How M runs work with `ocm`:
+- After aligning with the user upfront, M splits the campaign into bounded O-sized stages so each stage starts in a fresh O context (`google/gemini-4-neon` by default).
+- Each `ocm start` is pre-approved execution for O: M passes high-level goal, context from prior stages, constraints, and approved `--allow` rules; O owns task breakdown, worker/model choices, and `ocq` waves, runs Round 1 directly, and stops with results.
+- Inside a stage, M reviews O's round report via `show` and either steers another round in the same O session (`send`) or marks the stage `done` and starts the next O stream with a clean handoff.
+- Never run two O streams concurrently in the same directory; run O streams in parallel only across separate directories or worktrees.
 
-Do not write or edit code, and do not read source code to design procedures for
-`O`. Reading top-level docs (`AGENTS.md`, `README.md`, specs) to orient yourself
-is fine; codebase investigation and worker breakdown belong to `O`.
+## State
 
-State lives in `.ocm/ledger.jsonl` (append-only; only `ocm` writes it).
+```
+.ocm/
+  ocm.json      active manager session ID (managed by ocm)
+  ledger.jsonl  append-only stream state: running | reported | done | failed (managed by ocm)
+```
 
 ## Commands
 
 ```bash
-gski ocm start <name> "task..." [--dir DIR] [--allow 'shell:git *']...
-gski ocm ls                              # streams, status, costs, child ocq runs
-gski ocm show <name> [--chars 4000]      # stream details + O's last turn reply
-gski ocm wait [--timeout 3600]           # SSE sleep (zero CPU) until an O stops
+gski ocm start <name> "task..." [--dir DIR] [--model provider/model] [--allow RULE]...
+gski ocm wait [--timeout 3600]
+gski ocm ls [--status S...]
+gski ocm show <name> [--chars 4000]
 gski ocm send <name> "text" [--queue] [--allow RULE]...
-gski ocm send .. "text"                  # from O: message M while keeping bg jobs running
+gski ocm send .. "text"
 gski ocm done <name> [--note "..."]
 gski ocm fail <name> [--note "..."]
-gski ocm abort [<name>]                  # kills O's bg shells + interrupts -> reported
+gski ocm abort [<name>]
 ```
 
-Statuses: `running` -> `reported` -> `done` | `failed`, or back to `running` via `send`.
-`O` defaults to `google/gemini-4-carbon#medium`; do not pass `--model` unless the
-user explicitly asks for a different model.
-Never run two `O` streams concurrently in the same directory.
+- Do not pass `--model` on `start` unless the user explicitly asked for another model.
+- `/tmp/opencode/**` is allowed by default. Pass `--allow` only for user-approved permissions (`shell:git *`, `shell:ssh host *`, `external_directory:/path/**`); O can pass those same approved rules down to `ocq spawn --allow`.
 
-## Phase 1: align with the user
+## Workflow and mechanics
 
-Before starting any `O` session:
-
-1. Talk with the user until you clearly understand what they want built or done,
-   what matters to them, constraints, and what counts as finished. Ask sharp,
-   focused questions when something important is ambiguous; do not interrogate
-   with boilerplate forms.
-2. Outline the high-level plan: how you will stage the `O` tasks, plus any extra
-   permissions needed (`ssh`, `git` writes, external directories).
-3. Wait for explicit go-ahead before running `ocm start`.
-
-## Phase 2: autonomous loop (default: handle it yourself)
-
-Once the user says go, drive the campaign to completion on your own:
-
-```
-start <name> "..."   -> launches O on one bounded high-level task
-wait                 -> sleeps on server events until O stops for input/completion
-show <name>          -> read O's plan, question, or final report
-decide               -> send (approve/steer/correct) | done -> start next O | fail
-```
-
-Briefing `O`:
-- Give `O` a clear team-lead brief: what outcome is needed, why, relevant context
-  from earlier stages, scope boundaries, and approved permissions.
-- State goals and constraints, not code-level step-by-step instructions.
-
-Waiting and live messages:
-- Run `gski ocm wait --timeout 3600` as a background shell command
-  (`background: true`). It subscribes to SSE events and uses zero CPU while `O`
-  and its background jobs run, returning only when an `O` stops with no
-  background jobs running (`reported`). Do not poll between notifications.
-- Close any turn that starts background `wait` with a short one-liner
-  (e.g. `01-core started, waiting` or `01-core plan approved, waiting`) — never
-  an empty response.
-- On `timeout: N running`, restart background `wait` and reply `waiting`.
-- A running `O` can message you mid-run via `gski ocm send .. "..."`, delivered
-  to your session as `[ocm/<name>] ...` without stopping `ocm wait`.
-- To ask or steer a running `O` while background `ocm wait` is already active,
-  run `gski ocm send <name> "..."` and close the turn briefly — do not start a
-  second `ocm wait`; `O`'s `[ocm/<name>]` reply wakes your session directly. Start
-  `ocm wait` after `send` only when no `ocm wait` is currently running (e.g.
-  resuming a `reported`/`done` stream).
-
-Handling `O` reports (`reported`):
-- **Phase 1 plan from `O`**: check via `show <name>` that the plan matches the
-  stage goal and stays within agreed scope and permissions. Approve it yourself
-  (`gski ocm send <name> "go"`) or send adjustments. Do not bounce routine `O`
-  plans back to the user.
-- **Mid-run question or systematic failure from `O`**: resolve it yourself when
-  the answer follows from what you agreed with the user; steer with `ocm send`.
-- **Completion report from `O`**: read `show <name>` critically. If something was
-  missed, half-done, or drifted from intent, send concrete high-level corrections
-  (`ocm send <name> "..."`) for another iteration in the same `O` session. When
-  the stage is genuinely complete, mark `gski ocm done <name>` and start the next
-  `O` session with a fresh context, carrying forward what the next stage needs
-  to know.
-- **`denied <action>: <resource>`**: `ocm` auto-rejected an unapproved permission
-  ask. If the work truly requires it and the user did not pre-approve it, ask
-  the user; once approved, grant it with `ocm send <name> "go" --allow '...'`.
-
-When to come back to the user mid-run:
-- Only when an unapproved permission is needed, or reality contradicts a core
-  assumption so that guessing would violate what you agreed on. Otherwise keep
-  going.
-
-Context hygiene:
-- Keep turns short. `.ocm/ledger.jsonl` (`ocm ls`) is the state of record.
-- Do not read source code or worker transcripts.
-
-## Phase 3: finish
-
-When all stages are `done`: give a concise summary of what was accomplished
-across stages, key outcomes/paths, any caveats, and total cost (`O` + `ocq`).
-
-## Resume
-
-A new Manager session resumes from files alone: `gski ocm ls`, then
-`gski ocm show <name>` on active or reported streams. Running `O` sessions keep
-working while detached; `gski ocm wait` reconnects to them.
+1. Start and wait:
+   - Launch the stage with `ocm start <name> "..."`, then run `gski ocm wait --timeout 3600` with `background: true`.
+   - `wait` sleeps on SSE (zero CPU) and returns as soon as any running O stops with no background jobs (`reported`).
+   - Always close a turn that starts background `wait` with a short one-liner (e.g. `01-core started, waiting`), never an empty response. On `timeout: N running`, restart background `wait` and reply `waiting`. Do not poll.
+2. Live messages:
+   - A running O can message M mid-run via `gski ocm send .. "..."`, delivered as `[ocm/<name>]` without stopping `wait`.
+   - To steer or answer a running O while background `wait` is already active, run `gski ocm send <name> "..."` and close the turn briefly — do not start a second `wait`. Start `wait` after `send` only when resuming a `reported` or `done` stream.
+3. Handling `reported` streams (inspect via `ocm show <name>`):
+   - Round/stage completion: review outcomes against the stage goal and constraints. If something was missed or drifted, send high-level corrections (`ocm send <name> "..."`) for another round in that O session. When complete, mark `ocm done <name>` and start the next stage in a fresh O session.
+   - Scope question or blocker from O: resolve from what was agreed with the user (`ocm send`), or escalate to the user only if it contradicts agreed assumptions.
+   - `denied <action>: <resource>`: ocm auto-rejected an unapproved permission ask. If genuinely needed and not pre-approved, ask the user, then resume with `ocm send <name> "continue" --allow '...'`.
+   - Stuck stream: `ocm abort <name>` kills O's background shells and interrupts O (`-> reported`); if child `ocq` workers remain running, `abort` prints the `gski ocq abort` command.
+4. Finish and resume:
+   - When all stages are `done`, report accomplished outcomes across stages, key paths, caveats, and total cost (O + child `ocq` runs from `ocm ls`).
+   - A new M session resumes from files: `gski ocm ls`, `gski ocm show <name>`, `gski ocm wait`.

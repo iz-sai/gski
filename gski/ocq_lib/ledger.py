@@ -1,14 +1,16 @@
 import json
 import os
-import sys
+import re
 import time
 from pathlib import Path
 
 from gski.ocq_lib.api import DEFAULT_CFG, die
 
 WIDTH = 160
-SHOW = ("running", "reported", "failed")
+RUN_RE = re.compile(r"^[\w.-]+$")
+PARENT_TARGETS = ("..", "orchestrator", "parent")
 REGISTRY = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local/state") / "ocq" / "projects"
+ACTIONS = {"bash": "shell", "task": "subagent", "write": "edit", "patch": "edit"}
 
 
 def cut(s, n=WIDTH):
@@ -22,6 +24,18 @@ def project_root():
         if (d / ".ocq").is_dir():
             return d
     return cwd
+
+
+def known_projects():
+    return [line for line in REGISTRY.read_text().splitlines() if line] if REGISTRY.exists() else []
+
+
+def remember(root):
+    root = str(root)
+    if root not in known_projects():
+        REGISTRY.parent.mkdir(parents=True, exist_ok=True)
+        with open(REGISTRY, "a") as f:
+            f.write(root + "\n")
 
 
 def touch_orchestrator(rd):
@@ -42,24 +56,36 @@ def touch_orchestrator(rd):
         pass
 
 
+def ensure_run(run, allow=None):
+    if run in PARENT_TARGETS or not RUN_RE.match(run):
+        die(f"invalid run name: {run}")
+    root = project_root()
+    base = root / ".ocq"
+    base.mkdir(exist_ok=True)
+    gi = base / ".gitignore"
+    if not gi.exists():
+        gi.write_text("*\n")
+    rd = base / "runs" / run
+    (rd / "results").mkdir(parents=True, exist_ok=True)
+    cfg_path = rd / "run.json"
+    cfg = {**DEFAULT_CFG, **(json.loads(cfg_path.read_text()) if cfg_path.exists() else {})}
+    cfg["dir"] = str(root)
+    sid = os.environ.get("OPENCODE_SESSION_ID")
+    if sid and not any(t.get("session") == sid for t in fold(rd).values()):
+        cfg["orchestrator"] = sid
+    if allow:
+        cfg["allow"] = list(dict.fromkeys((cfg.get("allow") or []) + list(allow)))
+    cfg_path.write_text(json.dumps(cfg, indent=2) + "\n")
+    remember(root)
+    return rd, cfg
+
+
 def run_dir(run, must=True):
     rd = project_root() / ".ocq" / "runs" / run
     if must and not (rd / "run.json").exists():
         die(f"run not found: {rd}")
     touch_orchestrator(rd)
     return rd
-
-
-def known_projects():
-    return [line for line in REGISTRY.read_text().splitlines() if line] if REGISTRY.exists() else []
-
-
-def remember(root):
-    root = str(root)
-    if root not in known_projects():
-        REGISTRY.parent.mkdir(parents=True, exist_ok=True)
-        with open(REGISTRY, "a") as f:
-            f.write(root + "\n")
 
 
 def load_cfg(rd):
@@ -124,9 +150,6 @@ def resolve(tasks, ids):
     return out
 
 
-ACTIONS = {"bash": "shell", "task": "subagent", "write": "edit", "patch": "edit"}
-
-
 def rules_from(perm):
     rules = []
     for key, val in (perm or {}).items():
@@ -144,26 +167,20 @@ def parse_allow(spec):
     return {"action": ACTIONS.get(key, key), "resource": pat.strip() or "*", "effect": "allow"}
 
 
-def build_prompt(run, t):
+def build_prompt(rd, run, t):
     rel = f".ocq/runs/{run}"
-    parts = [
-        f"ocq run: {run}  task: {t['id']}  attempt: {t['attempts']}",
-        f"Read the brief first: {rel}/brief.md",
+    parts = [f"ocq run: {run}  task: {t['id']}"]
+    brief = rd / "brief.md"
+    if brief.exists() and brief.read_text().strip():
+        parts.append(f"Read the brief first: {rel}/brief.md")
+    parts += [
         "",
         "Task:",
         t["task"],
-    ]
-    if t.get("feedback"):
-        parts += ["", "Feedback on the previous attempt:", t["feedback"]]
-    parts += [
         "",
-        "No human is available. Stay within the task scope; if blocked with no background jobs to keep alive, "
-        "report failed with the reason and any partial work.",
-        "Do not test, compare, or validate unless the brief or task explicitly relays a user request "
-        "for it. Observe execution errors; done means execution completed, not independently verified.",
-        "In note, mention concrete instruction problems encountered while executing; suggest a fix "
-        "only if obvious. Do not search for problems or review the instructions separately.",
-        f'To message or reply to the orchestrator while keeping work/background jobs running: gski ocq send .. "..."',
+        "No human is available. Stay in scope; if blocked with no background jobs to keep alive, report failed with reason and partial work.",
+        "No extra tests, paranoid syntax checks, or validation unless asked in the brief or task. Observe execution errors; done means execution completed.",
+        'To message orchestrator while keeping work/background jobs running: gski ocq send .. "..."',
         "",
         f"When finished, write {rel}/results/{t['id']}.json:",
         '{"status": "done" | "failed", "artifact": "<path or short value>", "note": "<one line>"}',
@@ -172,22 +189,36 @@ def build_prompt(run, t):
     return "\n".join(parts)
 
 
+def short_model(t):
+    m = (t.get("model") or "").split("/")[-1].split("#")[0].replace("gemini-4-", "")
+    a = t.get("agent")
+    if a and a != "worker" and m:
+        return f" [{a}/{m}]"
+    if m and m != "hydrogen":
+        return f" [{m}]"
+    if a and a != "worker":
+        return f" [{a}]"
+    return ""
+
+
 def summary(tasks):
     counts = {}
     for t in tasks.values():
         counts[t["status"]] = counts.get(t["status"], 0) + 1
     cost = sum(t.get("cost") or 0 for t in tasks.values())
-    order = ["pending", "running", "reported", "done", "failed"]
+    order = ["running", "done", "failed", "reported", "pending"]
     parts = [f"{s} {counts[s]}" for s in order if counts.get(s)]
     return f"{len(tasks)} tasks: " + (", ".join(parts) or "empty") + f" | cost ${cost:.2f}"
 
 
 def row(t):
-    if t["status"] in ("reported", "done", "failed") and t.get("worker"):
-        info = f"{t['worker']} {t.get('artifact') or '-'} | {t.get('note') or ''}"
+    if t["status"] in ("done", "failed", "reported"):
+        prefix = f"{t['worker']} " if t["status"] == "reported" and t.get("worker") else ""
+        info = f"{prefix}{t.get('artifact') or '-'} | {t.get('note') or ''}"
     elif t["status"] == "running" and t.get("msg"):
         info = f"msg: {t['msg']}"
     else:
         info = t.get("task", "")
-    extra = f" [denied {len(t['denied'])}]" if t.get("denied") else ""
-    return cut(f"{t['id']} {t['status']} a{t.get('attempts', 0)}{extra} {info}")
+    denied = f" [denied {len(t['denied'])}]" if t.get("denied") else ""
+    att = f" a{t['attempts']}" if (t.get("attempts") or 0) > 1 else ""
+    return cut(f"{t['id']} {t['status']}{short_model(t)}{att}{denied} {info}")
